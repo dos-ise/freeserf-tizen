@@ -100,33 +100,34 @@ RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
 
 # The generated JS uses syntax newer than Chromium 69 (optional chaining, ??=, ||=).
 # Lower it with esbuild, using the node that ships with emsdk.
+# NOTE: the CMake target lives in src/, so the output is build/src/FreeSerf.js
 RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
     mkdir -p /home/freeserf/lower && cd /home/freeserf/lower && \
     npm init -y >/dev/null && npm install --no-audit --no-fund esbuild@0.24.0 >/dev/null && \
-    npx esbuild /home/freeserf/freeserf/build/FreeSerf.js \
+    npx esbuild /home/freeserf/freeserf/build/src/FreeSerf.js \
         --target=chrome69 --allow-overwrite --log-level=warning \
-        --outfile=/home/freeserf/freeserf/build/FreeSerf.js"
+        --outfile=/home/freeserf/freeserf/build/src/FreeSerf.js"
 
 # Emscripten's prebuilt libc (memcpy/memset) still uses bulk memory, so lower the linked
 # module and write it with only the features Chromium 69 accepts (sign-ext and mutable
 # globals are supported there). wasm-opt fails the build if anything else is left.
-RUN /home/freeserf/emsdk/upstream/bin/wasm-opt build/FreeSerf.wasm \
+RUN /home/freeserf/emsdk/upstream/bin/wasm-opt build/src/FreeSerf.wasm \
         --enable-bulk-memory --enable-bulk-memory-opt --enable-sign-ext \
         --enable-nontrapping-float-to-int --enable-mutable-globals \
         --llvm-memory-copy-fill-lowering --llvm-nontrapping-fptoint-lowering -O3 \
-        -o build/FreeSerf.lowered.wasm && \
-    /home/freeserf/emsdk/upstream/bin/wasm-opt build/FreeSerf.lowered.wasm \
+        -o build/src/FreeSerf.lowered.wasm && \
+    /home/freeserf/emsdk/upstream/bin/wasm-opt build/src/FreeSerf.lowered.wasm \
         --mvp-features --enable-sign-ext --enable-mutable-globals \
-        -o build/FreeSerf.wasm && \
-    rm build/FreeSerf.lowered.wasm
+        -o build/src/FreeSerf.wasm && \
+    rm build/src/FreeSerf.lowered.wasm
 
 # Assemble the Tizen widget directory
 WORKDIR /home/freeserf
 RUN mkdir -p widget/resources
 
-# Emscripten's target has no .html suffix -> FreeSerf.js/.wasm
-RUN cp freeserf/build/FreeSerf.js   widget/
-RUN cp freeserf/build/FreeSerf.wasm widget/
+# Emscripten's target has no .html suffix -> FreeSerf.js/.wasm (in build/src/)
+RUN cp freeserf/build/src/FreeSerf.js   widget/
+RUN cp freeserf/build/src/FreeSerf.wasm widget/
 
 # Fullscreen Tizen wrapper (no frame, no menus) + widget config + icon
 RUN cp freeserf/tizen/index.html widget/index.html
