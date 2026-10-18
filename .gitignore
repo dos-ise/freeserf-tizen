@@ -47,6 +47,9 @@ build*/
 # Local game data (copyrighted, not committed)
 web/data/
 
+# Tizen widget build output
+*.wgt
+
 
 # Emscripten build output (committed for GitHub Pages hosting)
 # web/FreeSerf.js

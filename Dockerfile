@@ -1,95 +1,95 @@
-FROM ubuntu:22.04 AS builder
+﻿FROM ubuntu:22.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 
-# Install build dependencies
+# Install required packages and dependencies
 RUN apt-get update && apt-get install -y \
-    cmake \
-    git \
-    ninja-build \
-    python3 \
-    wget \
-    xz-utils \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+	cmake \
+	expect \
+	git \
+	ninja-build \
+	python3 \
+	unzip \
+	wget \
+	xz-utils \
+	default-jre \
+	&& rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
+# Create a non-root user and set up the working directory
 RUN useradd -m -s /bin/bash freeserf
 USER freeserf
 WORKDIR /home/freeserf
 
-# Install Emscripten SDK
+# Install Tizen Studio CLI and configure the toolchain path
+RUN wget -nv -O web-cli_Tizen_Studio_6.1_ubuntu-64.bin 'https://download.tizen.org/sdk/Installer/tizen-studio_6.1/web-cli_Tizen_Studio_6.1_ubuntu-64.bin'
+RUN chmod a+x web-cli_Tizen_Studio_6.1_ubuntu-64.bin
+RUN ./web-cli_Tizen_Studio_6.1_ubuntu-64.bin --accept-license --no-java-check /home/freeserf/tizen-studio
+ENV PATH=/home/freeserf/tizen-studio/tools/ide/bin:/home/freeserf/tizen-studio/tools:${PATH}
+
+# Prepare the Tizen certificate and security profiles for signing the application package
+RUN tizen certificate \
+	-a freeserf \
+	-f freeserf \
+	-p 1234
+RUN tizen security-profiles add \
+	-n freeserf \
+	-a /home/freeserf/tizen-studio-data/keystore/author/freeserf.p12 \
+	-p 1234
+
+# Workaround to package applications without gnome-keyring
+RUN sed -i 's|/home/freeserf/tizen-studio-data/keystore/author/freeserf.pwd||' /home/freeserf/tizen-studio-data/profile/profiles.xml
+RUN sed -i 's|/home/freeserf/tizen-studio-data/tools/certificate-generator/certificates/distributor/tizen-distributor-signer.pwd|tizenpkcs12passfordsigner|' /home/freeserf/tizen-studio-data/profile/profiles.xml
+
+# Install official Emscripten SDK (pinned to the version GB-EMU_Tizen tested
+# with the Chromium 69 compatibility flags)
 RUN git clone https://github.com/emscripten-core/emsdk.git /home/freeserf/emsdk
 WORKDIR /home/freeserf/emsdk
 
-RUN ./emsdk install latest
-RUN ./emsdk activate latest
+RUN ./emsdk install 6.0.10
+RUN ./emsdk activate 6.0.10
 RUN echo 'source /home/freeserf/emsdk/emsdk_env.sh' >> /home/freeserf/.bashrc
 
-# Copy Freeserf source code
+# Copy the Freeserf source into the image
+# NOTE: build this Dockerfile from the root of your local freeserf-tizen checkout
 WORKDIR /home/freeserf
 COPY --chown=freeserf . ./freeserf
 
+# Build Freeserf using Emscripten (CMakeLists.txt lives at repo root)
 WORKDIR /home/freeserf/freeserf
 RUN git submodule update --init --recursive || true
 
+# The build context may contain a stale build/ dir - remove it or CMake
+# refuses to reconfigure in this container.
+RUN rm -rf build
+
 # Copy CMake modules for Emscripten SDL2 support
-# Diese werden benötigt, damit find_package(SDL2) bei Emscripten funktioniert
 RUN mkdir -p cmake && \
     if [ -f cmake-FindSDL2.cmake ]; then \
-        cp cmake-FindSDL2.cmake cmake/FindSDL2.cmake && \
-        echo "✓ Installed FindSDL2.cmake"; \
+        cp cmake-FindSDL2.cmake cmake/FindSDL2.cmake; \
     fi && \
     if [ -f cmake-FindSDL2_mixer.cmake ]; then \
-        cp cmake-FindSDL2_mixer.cmake cmake/FindSDL2_mixer.cmake && \
-        echo "✓ Installed FindSDL2_mixer.cmake"; \
+        cp cmake-FindSDL2_mixer.cmake cmake/FindSDL2_mixer.cmake; \
     fi && \
     if [ -f cmake-FindSDL2_image.cmake ]; then \
-        cp cmake-FindSDL2_image.cmake cmake/FindSDL2_image.cmake && \
-        echo "✓ Installed FindSDL2_image.cmake"; \
+        cp cmake-FindSDL2_image.cmake cmake/FindSDL2_image.cmake; \
     fi
 
-# ============================================================================
-# BUILD CONFIGURATION
-# ============================================================================
+# Tizen 5.5 (2020 sets) runs Chromium 69, whose WebAssembly has no bulk memory, no
+# non-trapping float-to-int and no BigInt at the JS/WASM boundary. Current Emscripten refuses
+# MIN_CHROME_VERSION below 85, so these features are switched off directly. WASM_BIGINT=0
+# prints a deprecation warning with recent Emscripten but still takes effect.
+ENV WASM_COMPAT="-mno-bulk-memory -mno-bulk-memory-opt -mno-nontrapping-fptoint"
 
-# Emscripten flags optimized for Freeserf
-ENV EMSCRIPTEN_FLAGS="\
--s WASM=1 \
--s USE_SDL=2 \
--s USE_SDL_MIXER=2 \
--s ALLOW_MEMORY_GROWTH=1 \
--s INITIAL_MEMORY=67108864 \
--s MAXIMUM_MEMORY=536870912 \
--s STACK_SIZE=5242880 \
--s EXPORTED_FUNCTIONS=['_main'] \
--s EXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS'] \
--s MODULARIZE=1 \
--s EXPORT_NAME='FreeSerf' \
--s ENVIRONMENT='web' \
--s FILESYSTEM=1 \
--s FORCE_FILESYSTEM=1 \
--s EXIT_RUNTIME=0 \
--s ASSERTIONS=0 \
--s DISABLE_EXCEPTION_CATCHING=0 \
--lidbfs.js"
-
-# Compiler optimization flags
-ENV CFLAGS="-O3 -flto"
-ENV CXXFLAGS="-O3 -flto -std=c++11"
-ENV LDFLAGS="$EMSCRIPTEN_FLAGS -O3 -flto"
-
-# Configure with CMake
+# Configure with CMake (emcmake sets the Emscripten toolchain itself)
 RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
     emcmake cmake \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_TOOLCHAIN_FILE=/home/freeserf/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \
         -DENABLE_TESTS=OFF \
         -DENABLE_SDL2_IMAGE=OFF \
-        -DCMAKE_C_FLAGS=\"\$CFLAGS\" \
-        -DCMAKE_CXX_FLAGS=\"\$CXXFLAGS\" \
-        -DCMAKE_EXE_LINKER_FLAGS=\"\$LDFLAGS\" \
+        -DCMAKE_C_FLAGS='$WASM_COMPAT' \
+        -DCMAKE_CXX_FLAGS='$WASM_COMPAT' \
+        -DCMAKE_EXE_LINKER_FLAGS='-sWASM_BIGINT=0 $WASM_COMPAT' \
         -G Ninja \
         -S . \
         -B build"
@@ -98,79 +98,81 @@ RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
 RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
     emmake ninja -C build"
 
-# ============================================================================
-# OUTPUT PREPARATION
-# ============================================================================
+# The generated JS uses syntax newer than Chromium 69 (optional chaining, ??=, ||=).
+# Lower it with esbuild, using the node that ships with emsdk.
+# NOTE: the CMake target lives in src/, so the output is build/src/FreeSerf.js
+RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
+    mkdir -p /home/freeserf/lower && cd /home/freeserf/lower && \
+    npm init -y >/dev/null && npm install --no-audit --no-fund esbuild@0.24.0 >/dev/null && \
+    npx esbuild /home/freeserf/freeserf/build/src/FreeSerf.js \
+        --target=chrome69 --allow-overwrite --log-level=warning \
+        --outfile=/home/freeserf/freeserf/build/src/FreeSerf.js"
 
-# Create output directory
-RUN mkdir -p /home/freeserf/output
+# Emscripten's prebuilt libc (memcpy/memset) still uses bulk memory, so lower the linked
+# module and write it with only the features Chromium 69 accepts (sign-ext, mutable
+# globals and atomics are supported there). wasm-opt fails the build if anything else
+# is left. --enable-threads keeps the atomic ops emitted by the SDL2 ports.
+RUN /home/freeserf/emsdk/upstream/bin/wasm-opt build/src/FreeSerf.wasm \
+        --enable-bulk-memory --enable-bulk-memory-opt --enable-sign-ext \
+        --enable-nontrapping-float-to-int --enable-mutable-globals --enable-threads \
+        --llvm-memory-copy-fill-lowering --llvm-nontrapping-fptoint-lowering -O3 \
+        -o build/src/FreeSerf.lowered.wasm && \
+    /home/freeserf/emsdk/upstream/bin/wasm-opt build/src/FreeSerf.lowered.wasm \
+        --mvp-features --enable-sign-ext --enable-mutable-globals --enable-threads \
+        -o build/src/FreeSerf.wasm && \
+    rm build/src/FreeSerf.lowered.wasm
 
-# Copy compiled WASM files
-RUN find build -name "*.wasm" -exec cp {} /home/freeserf/output/ \;
-RUN find build -name "*.js" -not -path "*/CMakeFiles/*" -exec cp {} /home/freeserf/output/ \;
+# Assemble the Tizen widget directory
+WORKDIR /home/freeserf
+RUN mkdir -p widget/resources
 
-# Copy our custom index.html
-RUN if [ -f "index.html" ]; then \
-        cp index.html /home/freeserf/output/; \
-        echo "✓ Copied index.html from repository"; \
-    fi
+# Emscripten's target has no .html suffix -> FreeSerf.js/.wasm (in build/src/)
+RUN cp freeserf/build/src/FreeSerf.js   widget/
+RUN cp freeserf/build/src/FreeSerf.wasm widget/
 
-# Copy data files as separate assets (NICHT einbetten!)
-# Diese werden zur Laufzeit mit FS_createPreloadedFile geladen
-RUN if [ -d "data" ]; then \
-        mkdir -p /home/freeserf/output/data; \
-        cp -r data/* /home/freeserf/output/data/; \
-        echo "✓ Copied game data files (will be loaded at runtime)"; \
-    fi
+# Fullscreen Tizen wrapper (no frame, no menus) + widget config + icon
+RUN cp freeserf/tizen/index.html widget/index.html
+RUN cp freeserf/res/config.xml widget/config.xml
+RUN cp freeserf/cmake/icon.png widget/icon.png
 
-# Copy index.html from repository if it exists
-RUN if [ -f "index.html" ]; then \
-        cp index.html /home/freeserf/output/; \
-        echo "✓ Using index.html from repository"; \
-    elif [ -f "web/index.html" ]; then \
-        cp web/index.html /home/freeserf/output/; \
-        echo "✓ Using index.html from web/ directory"; \
-    else \
-        echo "⚠ WARNING: No index.html found in repository!"; \
-        echo "⚠ Please add index.html to project root or web/ directory"; \
-    fi
+# Runtime resources (TrueType font, UI images) loaded into the VFS by index.html
+RUN cp freeserf/web/resources/settlers.ttf        widget/resources/
+RUN cp freeserf/web/resources/button-advanced.png widget/resources/
 
-# Copy additional web assets if they exist
-RUN if [ -d "web" ]; then \
-        cp -r web/* /home/freeserf/output/ 2>/dev/null || true; \
-        echo "✓ Copied web assets from web/ directory"; \
-    fi
+# Sign and package the application into a WGT file
+RUN echo \
+	'set timeout -1\n' \
+	'spawn tizen package -t wgt -- widget\n' \
+	'expect "Author password:"\n' \
+	'send -- "1234\\r"\n' \
+	'expect "Yes: (Y), No: (N) ?"\n' \
+	'send -- "N\\r"\n' \
+	'expect eof\n' \
+| expect
 
-# List all output files
-RUN echo "=== Build Output ===" && ls -lh /home/freeserf/output/
+RUN mv widget/FreeSerf.wgt .
 
-# ============================================================================
-# FINAL MINIMAL IMAGE
-# ============================================================================
+# Clean up unnecessary files to reduce image size
+RUN rm -rf \
+	widget \
+	freeserf \
+	web-cli_Tizen_Studio_6.1_ubuntu-64.bin \
+	tizen-package-expect.sh \
+	.package-manager \
+	emsdk \
+	.wget-hsts
 
+# Use a multi-stage build to reclaim space from deleted files
 FROM ubuntu:22.04
-LABEL maintainer="freeserf-wasm"
-LABEL description="Freeserf WebAssembly Build"
-
-RUN apt-get update && apt-get install -y \
-    python3 \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=base /home/freeserf/FreeSerf.wgt /home/freeserf/FreeSerf.wgt
+COPY --from=base /home/freeserf/tizen-studio /home/freeserf/tizen-studio
+COPY --from=base /home/freeserf/tizen-studio-data /home/freeserf/tizen-studio-data
 
 RUN useradd -m -s /bin/bash freeserf
+RUN chown -R freeserf:freeserf /home/freeserf
+
 USER freeserf
 WORKDIR /home/freeserf
 
-# Copy only the compiled output
-COPY --from=builder --chown=freeserf /home/freeserf/output ./freeserf-wasm
-
-# Create a simple web server script
-RUN echo '#!/bin/bash\n\
-cd /home/freeserf/freeserf-wasm\n\
-echo "Starting web server on http://0.0.0.0:8080"\n\
-echo "Open browser at http://localhost:8080"\n\
-python3 -m http.server 8080\n\
-' > /home/freeserf/serve.sh && chmod +x /home/freeserf/serve.sh
-
-EXPOSE 8080
-
-CMD ["/bin/bash"]
+# Add Tizen Studio tools to PATH environment variable
+ENV PATH=/home/freeserf/tizen-studio/tools/ide/bin:/home/freeserf/tizen-studio/tools:${PATH}

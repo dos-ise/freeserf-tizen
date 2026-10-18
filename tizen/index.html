@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreeSerf</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        /* Fullscreen game canvas - only the game window, no frame or menus */
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            background: #000;
+        }
+
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            transition: opacity 0.4s ease;
+        }
+
+        #loadingOverlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255,255,255,0.15);
+            border-top-color: #6aa84f;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #statusText {
+            font-size: 0.9em;
+            color: #bbb;
+            min-height: 20px;
+        }
+
+        #dataMissing {
+            display: none;
+            text-align: center;
+            max-width: 560px;
+            padding: 20px;
+        }
+
+        #dataMissing.visible {
+            display: block;
+        }
+
+        #dataMissing h2 {
+            font-size: 1.2em;
+            color: #e8e8e8;
+            margin-bottom: 10px;
+        }
+
+        #dataMissing p {
+            font-size: 0.85em;
+            color: #bbb;
+            line-height: 1.5;
+        }
+
+        #dataMissing .hint {
+            font-size: 0.75em;
+            opacity: 0.6;
+            margin-top: 12px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="1024" height="768" tabindex="1"></canvas>
+
+    <div id="loadingOverlay">
+        <div class="spinner" id="spinner"></div>
+        <div id="statusText">Loading game...</div>
+        <div id="dataMissing">
+            <h2>Game data not found</h2>
+            <p>Please insert a USB stick containing the original Settlers&nbsp;1 data files
+               (SPAE.PA / SPAD.PA / SPAF.PA / SPAU.PA) into the TV.</p>
+            <p class="hint">The app scans every mounted USB storage for these files.</p>
+        </div>
+    </div>
+
+    <script>
+        // Globale Instance Referenz
+        var FreeserfInstance = null;
+        var gameStarted = false;
+
+        // Emscripten Module Configuration
+        var Module = {
+            canvas: document.getElementById('canvas'),
+
+            // Command-line arguments for Freeserf
+            arguments: ['-g', '/data'],  // -g = data directory, /data = VFS path
+
+            // Prevent automatic start of main()
+            noInitialRun: true,
+
+            print: function (text) {
+                console.log('[Freeserf]', text);
+            },
+
+            printErr: function (text) {
+                console.error('[Freeserf Error]', text);
+            },
+
+            setStatus: function (text) {
+                var statusText = document.getElementById('statusText');
+                var loadingOverlay = document.getElementById('loadingOverlay');
+
+                if (!text) {
+                    statusText.textContent = 'Ready to play!';
+                } else if (text.indexOf('Running') !== -1) {
+                    if (gameStarted) {
+                        loadingOverlay.classList.add('hidden');
+                    }
+                } else {
+                    statusText.textContent = text;
+                }
+            },
+
+            totalDependencies: 0,
+
+            monitorRunDependencies: function (left) {
+                this.totalDependencies = Math.max(this.totalDependencies, left);
+                if (left === 0) {
+                    Module.setStatus('');
+                } else {
+                    Module.setStatus('Loading dependencies... (' + left + ')');
+                }
+            },
+
+            preRun: [],
+
+            postRun: [
+                function () {
+                    console.log('Freeserf initialized!');
+
+                    // Setup IndexedDB for persistent savegames
+                    if (FreeserfInstance && FreeserfInstance.FS) {
+                        try {
+                            FreeserfInstance.FS.mkdir('/saves');
+                            FreeserfInstance.FS.mount(FreeserfInstance.IDBFS, {}, '/saves');
+                            FreeserfInstance.FS.syncfs(true, function (err) {
+                                if (err) {
+                                    console.warn('Could not load saves:', err);
+                                }
+                            });
+                        } catch (e) {
+                            console.warn('IndexedDB not available:', e.message);
+                        }
+                    }
+                }
+            ],
+
+            onRuntimeInitialized: function () {
+                console.log('Runtime initialized');
+            }
+        };
+
+        // ============================================================================
+        // TIZEN TV SETUP
+        // ============================================================================
+
+        var isTizen = (typeof tizen !== 'undefined');
+
+        // Remote key -> synthetic keyboard event (SDL2's Emscripten backend reads
+        // keyCode/code/key from dispatched KeyboardEvents).
+        var REMOTE_KEY_ACTIONS = {
+            'ArrowUp':          { code: 'ArrowUp',    key: 'ArrowUp',    keyCode: 38 },
+            'ArrowDown':        { code: 'ArrowDown',  key: 'ArrowDown',  keyCode: 40 },
+            'ArrowLeft':        { code: 'ArrowLeft',  key: 'ArrowLeft',  keyCode: 37 },
+            'ArrowRight':       { code: 'ArrowRight', key: 'ArrowRight', keyCode: 39 },
+            'Enter':            { code: 'Enter',      key: 'Enter',      keyCode: 13 },
+            'Return':           { code: 'Escape',     key: 'Escape',     keyCode: 27 },
+            'ColorF0Red':       { code: 'F1',         key: 'F1',         keyCode: 112 },
+            'ColorF1Green':     { code: 'F2',         key: 'F2',         keyCode: 113 },
+            'ColorF2Yellow':    { code: 'F3',         key: 'F3',         keyCode: 114 },
+            'ColorF3Blue':      { code: 'F4',         key: 'F4',         keyCode: 115 },
+            'ChannelUp':        { code: 'PageUp',     key: 'PageUp',     keyCode: 33 },
+            'ChannelDown':      { code: 'PageDown',   key: 'PageDown',   keyCode: 34 },
+            'MediaPlayPause':   { code: 'Space',      key: ' ',          keyCode: 32 },
+            'MediaRewind':      { code: 'F5',         key: 'F5',         keyCode: 116 },
+            'MediaFastForward': { code: 'F6',         key: 'F6',         keyCode: 117 }
+        };
+
+        // keyCode -> action, resolved at runtime via tizen.tvinputdevice.getKey()
+        // because the numeric keyCode is not guaranteed to be the same across
+        // TV models/firmware.
+        var remoteKeyMapping = {};
+
+        // Native (real hardware keyboard / synthetic) keys we never intercept -
+        // they fall straight through to the game. This also prevents the
+        // synthetic events we dispatch from being re-caught (infinite loop).
+        function isNativePassthroughKey(e) {
+            var kc = e.keyCode;
+            return (
+                (kc >= 37 && kc <= 40) ||   // Arrows
+                kc === 13 ||                // Enter
+                kc === 27 ||                // Escape
+                kc === 32 ||                // Space
+                kc === 9 ||                 // Tab
+                kc === 33 || kc === 34 ||   // PageUp / PageDown
+                (kc >= 48 && kc <= 57) ||   // 0-9
+                (kc >= 65 && kc <= 90) ||   // A-Z
+                (kc >= 112 && kc <= 123) || // F1-F12
+                kc === 187 || kc === 189 || // + / -
+                kc === 219 || kc === 221 || // [ / ]
+                kc === 17                   // Ctrl
+            );
+        }
+
+        function initTizenKeys() {
+            if (!isTizen || !tizen.tvinputdevice) {
+                console.warn('[TIZEN] tizen.tvinputdevice not available - remote mapping skipped');
+                return;
+            }
+
+            Object.keys(REMOTE_KEY_ACTIONS).forEach(function (keyName) {
+                try {
+                    tizen.tvinputdevice.registerKey(keyName);
+                    var keyInfo = tizen.tvinputdevice.getKey(keyName);
+                    if (keyInfo && typeof keyInfo.code === 'number') {
+                        remoteKeyMapping[keyInfo.code] = REMOTE_KEY_ACTIONS[keyName];
+                    }
+                } catch (e) {
+                    console.warn('[TIZEN] registerKey failed:', keyName, e);
+                }
+            });
+
+            // OK and Return are base keys delivered without registerKey(), but
+            // their keyCode can still differ per model - resolve them the same way.
+            try {
+                var enterKey = tizen.tvinputdevice.getKey('Enter');
+                remoteKeyMapping[enterKey && typeof enterKey.code === 'number' ? enterKey.code : 13] = REMOTE_KEY_ACTIONS['Enter'];
+            } catch (e) {
+                remoteKeyMapping[13] = REMOTE_KEY_ACTIONS['Enter'];
+            }
+
+            try {
+                var returnKey = tizen.tvinputdevice.getKey('Return');
+                remoteKeyMapping[returnKey && typeof returnKey.code === 'number' ? returnKey.code : 10009] = REMOTE_KEY_ACTIONS['Return'];
+            } catch (e) {
+                remoteKeyMapping[10009] = REMOTE_KEY_ACTIONS['Return'];
+            }
+        }
+
+        // Dispatch a synthetic KeyboardEvent whose code/key/keyCode are overridden
+        // with defineProperty so SDL2's Emscripten backend picks them up.
+        function dispatchKey(type, def) {
+            var evt = new KeyboardEvent(type, { bubbles: true, cancelable: true });
+            Object.defineProperty(evt, 'code', { get: function () { return def.code; } });
+            Object.defineProperty(evt, 'key', { get: function () { return def.key; } });
+            Object.defineProperty(evt, 'keyCode', { get: function () { return def.keyCode; } });
+            Object.defineProperty(evt, 'which', { get: function () { return def.keyCode; } });
+            document.dispatchEvent(evt);
+        }
+
+        function handleRemoteKeys() {
+            document.addEventListener('keydown', function (e) {
+                if (isNativePassthroughKey(e)) {
+                    return; // Don't intercept native keys
+                }
+                var def = remoteKeyMapping[e.keyCode];
+                if (def) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dispatchKey('keydown', def);
+                }
+            });
+
+            document.addEventListener('keyup', function (e) {
+                if (isNativePassthroughKey(e)) {
+                    return; // Don't intercept native keys
+                }
+                var def = remoteKeyMapping[e.keyCode];
+                if (def) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    dispatchKey('keyup', def);
+                }
+            });
+        }
+
+        // ============================================================================
+        // GAME BOOT
+        // ============================================================================
+
+        function startGame() {
+            if (gameStarted) return;
+            gameStarted = true;
+            document.getElementById('loadingOverlay').classList.add('hidden');
+
+            var canvas = document.getElementById('canvas');
+            canvas.focus();
+
+            try {
+                FreeserfInstance.callMain(Module.arguments || []);
+            } catch (e) {
+                console.error('main() error:', e);
+            }
+        }
+
+        function writeFileToVFS(instance, path, buffer) {
+            instance.FS.writeFile(path, new Uint8Array(buffer));
+        }
+
+        // ============================================================================
+        // GAME DATA LOADING
+        // Bundled data/ folder first, then USB stick (Tizen Filesystem API),
+        // following the same pattern as GB-EMU_Tizen's USB ROM loading.
+        // ============================================================================
+
+        var DATA_FILES = ['SPAE.PA', 'SPAD.PA', 'SPAF.PA', 'SPAU.PA'];
+
+        // Check whether game data files are bundled in the widget (data/ folder)
+        function checkBundledData() {
+            return Promise.all(DATA_FILES.map(function (filename) {
+                return fetch('data/' + filename)
+                    .then(function (response) {
+                        if (!response.ok) {
+                            throw new Error('Not found');
+                        }
+                        return response.arrayBuffer().then(function (buffer) {
+                            return { filename: filename, buffer: buffer };
+                        });
+                    })
+                    .catch(function () {
+                        return null;
+                    });
+            }));
+        }
+
+        // tizen.filesystem.listStorages() -> only EXTERNAL + MOUNTED (i.e. USB)
+        function listUsbStorages() {
+            return new Promise(function (resolve) {
+                if (!(isTizen && tizen.filesystem)) { resolve([]); return; }
+                tizen.filesystem.listStorages(
+                    function (storages) {
+                        console.log('[USB] Storages:', storages.map(function (s) {
+                            return s.label + ' (type=' + s.type + ', state=' + s.state + ')';
+                        }));
+                        resolve(storages.filter(function (s) {
+                            return s.type === 'EXTERNAL' && s.state === 'MOUNTED';
+                        }));
+                    },
+                    function (err) { console.warn('[USB] listStorages failed:', err); resolve([]); }
+                );
+            });
+        }
+
+        // Resolve a storage label (e.g. "removable_sda1") to its root File handle
+        function resolveStorage(label) {
+            return new Promise(function (resolve, reject) {
+                tizen.filesystem.resolve(label, resolve, reject, 'r');
+            });
+        }
+
+        // List SPA*.PA files directly under a directory handle
+        function listPaFiles(dirHandle) {
+            return new Promise(function (resolve, reject) {
+                dirHandle.listFiles(
+                    function (files) {
+                        console.log('[USB] Files in', dirHandle.fullPath, ':',
+                            files.map(function (f) { return f.name; }));
+                        resolve(files.filter(function (f) {
+                            return f.isFile && /^SPA.*\.PA$/i.test(f.name);
+                        }));
+                    },
+                    reject
+                );
+            });
+        }
+
+        // Read a File handle's full content as raw bytes.
+        // IMPORTANT: use readBytes(), not read() - read() returns a DOMString
+        // and would corrupt binary data.
+        function readFileAsBytes(fileHandle) {
+            return new Promise(function (resolve, reject) {
+                fileHandle.openStream('r', function (stream) {
+                    try {
+                        var bytes = stream.readBytes(fileHandle.fileSize);
+                        stream.close();
+                        resolve(new Uint8Array(bytes));
+                    } catch (err) {
+                        try { stream.close(); } catch (e) { /* ignore */ }
+                        reject(err);
+                    }
+                }, reject);
+            });
+        }
+
+        // Scan every mounted USB storage for SPA*.PA files and read them.
+        function findDataOnUsb() {
+            return listUsbStorages().then(function (storages) {
+                var results = [];
+                var chain = Promise.resolve();
+
+                storages.forEach(function (storage) {
+                    chain = chain.then(function () {
+                        return resolveStorage(storage.label).then(function (root) {
+                            return listPaFiles(root).then(function (paFiles) {
+                                var reads = paFiles.map(function (f) {
+                                    return readFileAsBytes(f).then(function (bytes) {
+                                        return { filename: f.name.toUpperCase(), buffer: bytes };
+                                    });
+                                });
+                                return Promise.all(reads).then(function (loaded) {
+                                    results = results.concat(loaded);
+                                });
+                            });
+                        }).catch(function (err) {
+                            console.warn('[USB] Skipping storage', storage.label, ':', err);
+                        });
+                    });
+                });
+
+                return chain.then(function () {
+                    return results;
+                });
+            });
+        }
+
+        // Create the WASM instance and load resources (TrueType font, UI images)
+        function initGame() {
+            return new Promise(function (resolve, reject) {
+                FreeSerf(Module).then(function (instance) {
+                    FreeserfInstance = instance;
+
+                    try {
+                        instance.FS.mkdir('/data');
+                    } catch (e) { }
+                    try {
+                        instance.FS.mkdir('/resources');
+                    } catch (e) { }
+
+                    var resourceFiles = ['settlers.ttf', 'button-advanced.png'];
+                    var loadPromises = resourceFiles.map(function (filename) {
+                        return fetch('resources/' + filename)
+                            .then(function (response) {
+                                if (!response.ok) {
+                                    throw new Error('Not found');
+                                }
+                                return response.arrayBuffer();
+                            })
+                            .then(function (buffer) {
+                                writeFileToVFS(instance, '/resources/' + filename, buffer);
+                                return filename;
+                            })
+                            .catch(function () {
+                                return null;
+                            });
+                    });
+
+                    Promise.all(loadPromises).then(function () {
+                        resolve(instance);
+                    }).catch(reject);
+
+                }).catch(reject);
+            });
+        }
+
+        function showDataMissing() {
+            document.getElementById('spinner').style.display = 'none';
+            document.getElementById('statusText').style.display = 'none';
+            document.getElementById('dataMissing').classList.add('visible');
+        }
+
+        // ============================================================================
+        // SETUP
+        // ============================================================================
+
+        initTizenKeys();
+        handleRemoteKeys();
+    </script>
+
+    <!-- Emscripten generated file -->
+    <script src="FreeSerf.js"></script>
+    <script>
+        // ============================================================================
+        // GAME BOOT
+        // Runs after FreeSerf.js is loaded (FreeSerf factory must exist).
+        // ============================================================================
+
+        function loadAndStart(instance, files) {
+            files.forEach(function (r) {
+                writeFileToVFS(instance, '/data/' + r.filename, r.buffer);
+            });
+            startGame();
+        }
+
+        // Start data check and WASM load in parallel
+        var dataCheck = checkBundledData();
+        var gameInit = initGame();
+
+        dataCheck.then(function (results) {
+            var found = results.filter(function (r) { return r !== null; });
+
+            if (found.length > 0) {
+                // Bundled data found - use it
+                gameInit.then(function (instance) {
+                    loadAndStart(instance, found);
+                });
+            } else {
+                // No bundled data - scan USB sticks
+                findDataOnUsb().then(function (usbFiles) {
+                    if (usbFiles.length > 0) {
+                        console.log('[USB] Found', usbFiles.length, 'data file(s):',
+                            usbFiles.map(function (f) { return f.filename; }));
+                        gameInit.then(function (instance) {
+                            loadAndStart(instance, usbFiles);
+                        });
+                    } else {
+                        // No data anywhere - show the missing-data screen
+                        gameInit.then(function () {
+                            showDataMissing();
+                        });
+                    }
+                }).catch(function (err) {
+                    console.error('USB data check error:', err);
+                    gameInit.then(function () {
+                        showDataMissing();
+                    });
+                });
+            }
+        }).catch(function (err) {
+            console.error('Data check error:', err);
+            gameInit.then(function () {
+                showDataMissing();
+            });
+        });
+    </script>
+</body>
+</html>
