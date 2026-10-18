@@ -109,15 +109,16 @@ RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
         --outfile=/home/freeserf/freeserf/build/src/FreeSerf.js"
 
 # Emscripten's prebuilt libc (memcpy/memset) still uses bulk memory, so lower the linked
-# module and write it with only the features Chromium 69 accepts (sign-ext and mutable
-# globals are supported there). wasm-opt fails the build if anything else is left.
+# module and write it with only the features Chromium 69 accepts (sign-ext, mutable
+# globals and atomics are supported there). wasm-opt fails the build if anything else
+# is left. --enable-threads keeps the atomic ops emitted by the SDL2 ports.
 RUN /home/freeserf/emsdk/upstream/bin/wasm-opt build/src/FreeSerf.wasm \
         --enable-bulk-memory --enable-bulk-memory-opt --enable-sign-ext \
-        --enable-nontrapping-float-to-int --enable-mutable-globals \
+        --enable-nontrapping-float-to-int --enable-mutable-globals --enable-threads \
         --llvm-memory-copy-fill-lowering --llvm-nontrapping-fptoint-lowering -O3 \
         -o build/src/FreeSerf.lowered.wasm && \
     /home/freeserf/emsdk/upstream/bin/wasm-opt build/src/FreeSerf.lowered.wasm \
-        --mvp-features --enable-sign-ext --enable-mutable-globals \
+        --mvp-features --enable-sign-ext --enable-mutable-globals --enable-threads \
         -o build/src/FreeSerf.wasm && \
     rm build/src/FreeSerf.lowered.wasm
 
