@@ -1,0 +1,26 @@
+# Version control
+.git
+.gitignore
+.gitmodules
+
+# Build output
+build*/
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.exe
+*.wgt
+
+# Local game data (copyrighted)
+web/data/
+*.PA
+
+# IDE / OS
+.vscode
+.idea
+*.user
+*.suo
+.DS_Store
+Thumbs.db

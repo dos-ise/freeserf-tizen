@@ -41,12 +41,13 @@ RUN tizen security-profiles add \
 RUN sed -i 's|/home/freeserf/tizen-studio-data/keystore/author/freeserf.pwd||' /home/freeserf/tizen-studio-data/profile/profiles.xml
 RUN sed -i 's|/home/freeserf/tizen-studio-data/tools/certificate-generator/certificates/distributor/tizen-distributor-signer.pwd|tizenpkcs12passfordsigner|' /home/freeserf/tizen-studio-data/profile/profiles.xml
 
-# Install official Emscripten SDK
+# Install official Emscripten SDK (pinned to the version GB-EMU_Tizen tested
+# with the Chromium 69 compatibility flags)
 RUN git clone https://github.com/emscripten-core/emsdk.git /home/freeserf/emsdk
 WORKDIR /home/freeserf/emsdk
 
-RUN ./emsdk install latest
-RUN ./emsdk activate latest
+RUN ./emsdk install 6.0.10
+RUN ./emsdk activate 6.0.10
 RUN echo 'source /home/freeserf/emsdk/emsdk_env.sh' >> /home/freeserf/.bashrc
 
 # Copy the Freeserf source into the image
@@ -57,6 +58,10 @@ COPY --chown=freeserf . ./freeserf
 # Build Freeserf using Emscripten (CMakeLists.txt lives at repo root)
 WORKDIR /home/freeserf/freeserf
 RUN git submodule update --init --recursive || true
+
+# The build context may contain a stale build/ dir - remove it or CMake
+# refuses to reconfigure in this container.
+RUN rm -rf build
 
 # Copy CMake modules for Emscripten SDL2 support
 RUN mkdir -p cmake && \
@@ -76,11 +81,10 @@ RUN mkdir -p cmake && \
 # prints a deprecation warning with recent Emscripten but still takes effect.
 ENV WASM_COMPAT="-mno-bulk-memory -mno-bulk-memory-opt -mno-nontrapping-fptoint"
 
-# Configure with CMake
+# Configure with CMake (emcmake sets the Emscripten toolchain itself)
 RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
     emcmake cmake \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_TOOLCHAIN_FILE=/home/freeserf/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \
         -DENABLE_TESTS=OFF \
         -DENABLE_SDL2_IMAGE=OFF \
         -DCMAKE_C_FLAGS='$WASM_COMPAT' \
