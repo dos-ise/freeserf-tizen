@@ -67,8 +67,13 @@ if(EMSCRIPTEN)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=FreeSerf")
 
     # Memory Settings
+    # FREESERF_WASM_INITIAL_MEMORY can be raised for memory-hungry targets
+    # (e.g. the Tizen TV build) to avoid WASM memory growth after the WebGL
+    # textures are created - growth invalidates the textures and causes
+    # black flickering.
+    set(FREESERF_WASM_INITIAL_MEMORY "67108864" CACHE STRING "Initial WASM memory (bytes)")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sALLOW_MEMORY_GROWTH=1")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sINITIAL_MEMORY=67108864")   # 64MB
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sINITIAL_MEMORY=${FREESERF_WASM_INITIAL_MEMORY}")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sMAXIMUM_MEMORY=2147483648") # 2GB
 
     # Browser Environment

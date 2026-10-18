@@ -20,12 +20,16 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
 
-        /* Fullscreen game canvas - only the game window, no frame or menus */
+        /* Fullscreen game canvas - only the game window, no frame or menus.
+           Scaled at runtime (fitCanvasToScreen) so it fills the screen while
+           preserving the aspect ratio - more reliable than object-fit on
+           the TV's Chromium 69. */
         #canvas {
             display: block;
-            width: 100vw;
-            height: 100vh;
-            object-fit: contain;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform-origin: center center;
             image-rendering: pixelated;
             image-rendering: crisp-edges;
             background: #000;
@@ -143,7 +147,8 @@
                 var loadingOverlay = document.getElementById('loadingOverlay');
 
                 if (!text) {
-                    statusText.textContent = 'Ready to play!';
+                    // WASM is ready, but game data may still be loading
+                    statusText.textContent = 'Loading...';
                 } else if (text.indexOf('Running') !== -1) {
                     if (gameStarted) {
                         loadingOverlay.classList.add('hidden');
@@ -333,6 +338,11 @@
             } catch (e) {
                 console.error('main() error:', e);
             }
+
+            // SDL2 has now set the canvas size - scale it to fill the screen
+            if (typeof fitCanvasToScreen === 'function') {
+                fitCanvasToScreen();
+            }
         }
 
         function writeFileToVFS(instance, path, buffer) {
@@ -406,16 +416,37 @@
             });
         }
 
-        // Read a File handle's full content as raw bytes.
+        // Read a File handle's full content as raw bytes, in chunks (more
+        // reliable for the multi-MB SPA*.PA files on a TV).
         // IMPORTANT: use readBytes(), not read() - read() returns a DOMString
         // and would corrupt binary data.
         function readFileAsBytes(fileHandle) {
             return new Promise(function (resolve, reject) {
                 fileHandle.openStream('r', function (stream) {
                     try {
-                        var bytes = stream.readBytes(fileHandle.fileSize);
+                        var CHUNK = 1 << 16; // 64 KB
+                        var chunks = [];
+                        var total = 0;
+                        while (true) {
+                            var chunk;
+                            try {
+                                chunk = stream.readBytes(CHUNK);
+                            } catch (e) {
+                                break; // EOF on some firmwares throws
+                            }
+                            if (!chunk || chunk.length === 0) break;
+                            chunks.push(chunk);
+                            total += chunk.length;
+                            if (chunk.length < CHUNK) break;
+                        }
                         stream.close();
-                        resolve(new Uint8Array(bytes));
+                        var out = new Uint8Array(total);
+                        var offset = 0;
+                        for (var i = 0; i < chunks.length; i++) {
+                            out.set(chunks[i], offset);
+                            offset += chunks[i].length;
+                        }
+                        resolve(out);
                     } catch (err) {
                         try { stream.close(); } catch (e) { /* ignore */ }
                         reject(err);
@@ -504,6 +535,20 @@
         // SETUP
         // ============================================================================
 
+        // Scale the canvas to fill the screen while preserving the aspect
+        // ratio (same approach as GB-EMU_Tizen's fitCaseToScreen).
+        function fitCanvasToScreen() {
+            var canvas = document.getElementById('canvas');
+            if (!canvas || canvas.width === 0 || canvas.height === 0) return;
+            var scale = Math.min(
+                window.innerHeight / canvas.height,
+                window.innerWidth / canvas.width
+            );
+            canvas.style.transform = 'scale(' + scale + ')';
+        }
+        window.addEventListener('resize', fitCanvasToScreen);
+        window.addEventListener('load', fitCanvasToScreen);
+
         initTizenKeys();
         handleRemoteKeys();
     </script>
@@ -516,7 +561,15 @@
         // Runs after FreeSerf.js is loaded (FreeSerf factory must exist).
         // ============================================================================
 
+        function setLoadingStatus(text) {
+            var statusText = document.getElementById('statusText');
+            if (statusText) {
+                statusText.textContent = text;
+            }
+        }
+
         function loadAndStart(instance, files) {
+            setLoadingStatus('Starting game...');
             files.forEach(function (r) {
                 writeFileToVFS(instance, '/data/' + r.filename, r.buffer);
             });
@@ -537,10 +590,12 @@
                 });
             } else {
                 // No bundled data - scan USB sticks
+                setLoadingStatus('Scanning USB sticks...');
                 findDataOnUsb().then(function (usbFiles) {
                     if (usbFiles.length > 0) {
                         console.log('[USB] Found', usbFiles.length, 'data file(s):',
                             usbFiles.map(function (f) { return f.filename; }));
+                        setLoadingStatus('Loading game data from USB...');
                         gameInit.then(function (instance) {
                             loadAndStart(instance, usbFiles);
                         });
