@@ -97,6 +97,9 @@ Freeserf runs as a **Tizen widget** (`.wgt`) on Samsung Smart TVs (Tizen 5.5+).
 The app always runs **fullscreen** – only the game window, no frame or menus –
 and supports the TV's **pointer device** (mouse) as well as the remote control.
 
+> 📄 **Full documentation:** see [TIZEN.md](TIZEN.md) for architecture, build,
+> release, installation, USB data loading, controls and troubleshooting.
+
 ### Game data from USB stick
 
 Like GB-EMU_Tizen loads ROMs from a USB stick, the Tizen app scans every
