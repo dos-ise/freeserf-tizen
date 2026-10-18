@@ -127,7 +127,7 @@ RUN cp freeserf/build/FreeSerf.wasm widget/
 # Fullscreen Tizen wrapper (no frame, no menus) + widget config + icon
 RUN cp freeserf/tizen/index.html widget/index.html
 RUN cp freeserf/res/config.xml widget/config.xml
-RUN cp freeserf/res/icon.png   widget/icon.png
+RUN cp freeserf/cmake/icon.png widget/icon.png
 
 # Runtime resources (TrueType font, UI images) loaded into the VFS by index.html
 RUN cp freeserf/web/resources/settlers.ttf        widget/resources/

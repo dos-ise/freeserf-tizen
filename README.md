@@ -202,7 +202,7 @@ The platform layer (`video-sdl`, `audio-sdlmixer`, `event_loop-sdl`,
 * `web/` – the playable web app (index.html + build output + game data)
 * `tizen/` – fullscreen Tizen wrapper (`index.html` with USB data loading and
   remote control support)
-* `res/` – Tizen widget config (`config.xml`) and app icon
+* `res/` – Tizen widget config (`config.xml`); the app icon comes from `cmake/icon.png`
 * `src/` – the Freeserf source code (upstream + SDL2 platform)
 * `build-wasm.ps1` – build script without CMake
 * `Dockerfile` – Tizen widget build container (Tizen Studio CLI + Emscripten)
