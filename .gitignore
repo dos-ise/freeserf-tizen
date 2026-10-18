@@ -48,7 +48,7 @@ build*/
 web/data/
 
 
-# Emscripten build output
-web/FreeSerf.js
-web/FreeSerf.wasm
+# Emscripten build output (committed for GitHub Pages hosting)
+# web/FreeSerf.js
+# web/FreeSerf.wasm
 

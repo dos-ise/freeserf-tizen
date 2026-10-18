@@ -1,85 +1,90 @@
-﻿# Freeserf (WebAssembly Edition)
+# Freeserf (WebAssembly Edition)
 
-[Freeserf](https://github.com/freeserf/freeserf) ist eine Open-Source-Nachbildung
-von **The Settlers 1 (Serf City)**. Dieses Repository ist ein **WebAssembly-Port**,
-der das Spiel direkt im Browser spielbar macht – ohne Installation.
+[Freeserf](https://github.com/freeserf/freeserf) is an open-source recreation of
+**The Settlers 1 (Serf City)**. This repository is a **WebAssembly port** that
+makes the game playable directly in the browser – no installation required.
 
-Der Code basiert auf dem aktuellen Freeserf-Master (Stand 0.5, inkl. KI-Gegner,
-Tutorials, Spielende, erweiterte Optionen, Autosave, Übersetzungen und
-TrueType-Font), **bewusst auf SDL2 statt SDL3** – siehe unten.
+The code is based on the current Freeserf master (0.5, including AI opponents,
+tutorials, game end, extended options, autosave, translations and TrueType
+font), **deliberately on SDL2 instead of SDL3** – see below.
 
 ---
 
-## 🎮 Spielen
+## 🎮 Play
 
-### Voraussetzung: Spieldaten
+### Prerequisite: Game data
 
-Freeserf benötigt die **Original-Spieldaten** von The Settlers 1 (urheberrechtlich
-geschützt, werden hier nicht mitgeliefert). Lege eine der folgenden Dateien in
-den Ordner `web/data/`:
+Freeserf needs the **original game data** from The Settlers 1 (copyrighted, not
+shipped with this repository). You have two options:
 
-| Datei | Sprache |
-|-------|---------|
-| `SPAE.PA` | Englisch |
-| `SPAD.PA` | Deutsch |
-| `SPAF.PA` | Französisch |
-| `SPAU.PA` | US-Englisch |
+**Option A – Upload in the browser (recommended):** Open the game and use the
+upload dialog to select your `SPA*.PA` files. No local setup needed.
 
-Die Dateien stammen aus der DOS-Version des Originals (auch Amiga-Daten werden
-unterstützt). Ohne Spieldaten zeigt die Seite eine Fehlermeldung.
+**Option B – Place the files in `web/data/`:** Put one of the following files
+into the `web/data/` folder:
 
-### Starten
+| File    | Language   |
+|---------|------------|
+| `SPAE.PA` | English  |
+| `SPAD.PA` | German   |
+| `SPAF.PA` | French   |
+| `SPAU.PA` | US English |
 
-1. Den Ordner `web/` mit einem HTTP-Server ausliefern (Wasm lädt nicht per
+The files come from the DOS version of the original (Amiga data is supported
+too). Without game data, the page shows an upload dialog instead of an error.
+
+### Start
+
+1. Serve the `web/` folder with an HTTP server (Wasm does not load via
    `file://`):
    ```
    python -m http.server 8000 --directory web
    ```
-2. Im Browser **http://localhost:8000** öffnen.
-3. Das Spiel lädt die Spieldaten automatisch und startet.
+2. Open **http://localhost:8000** in your browser.
+3. The game loads the data automatically and starts.
 
-### Steuerung
+### Controls
 
-* `1`–`5`: Panel-Buttons aktivieren
-* `b`: Bau-Möglichkeiten anzeigen
-* `TAB`/SHIFT-`TAB`: Nachrichten durchblättern
-* `+`/`-`: Spielgeschwindigkeit, `0`: zurücksetzen
-* `p`: Pause, `j`: Spieler wechseln
-* `F10`: Hauptmenü
-* `s`/`m`: Sound/Musik an/aus
+* `1`–`5`: Activate panel buttons
+* `b`: Show build options
+* `TAB`/SHIFT-`TAB`: Cycle through messages
+* `+`/`-`: Game speed, `0`: reset
+* `p`: Pause, `j`: Switch player
+* `F10`: Main menu
+* `s`/`m`: Sound/music on/off
 * `[`/`]`: Zoom
-* CTRL+`f`: Vollbild (auch über den Button)
-* CTRL+`z`: Speichern
+* CTRL+`f`: Fullscreen (also via the button)
+* CTRL+`z`: Save
 
 ---
 
-## 🔨 Bauen
+## 🔨 Build
 
-### Lokal (ohne CMake) – `build-wasm.ps1`
+### Locally (without CMake) – `build-wasm.ps1`
 
-Das Skript kompiliert alle Quellen direkt mit `em++` (Emscripten muss installiert
-sein, z. B. über das [emsdk](https://github.com/emscripten-core/emsdk)):
+The script compiles all sources directly with `em++` (Emscripten must be
+installed, e.g. via the [emsdk](https://github.com/emscripten-core/emsdk)):
 
 ```
 powershell -ExecutionPolicy Bypass -File build-wasm.ps1
 ```
 
-Die Ausgabe liegt in `build-wasm/` (`FreeSerf.js` + `FreeSerf.wasm`). Für den
-Test in den Browser nach `web/` kopieren:
+The output goes to `build-wasm/` (`FreeSerf.js` + `FreeSerf.wasm`). To test in
+the browser, copy it to `web/`:
 
 ```
 copy build-wasm\FreeSerf.js web\
 copy build-wasm\FreeSerf.wasm web\
 ```
 
-### Mit CMake
+### With CMake
 
 ```
 emcmake cmake -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF
 cmake --build build
 ```
 
-### Mit Docker
+### With Docker
 
 ```
 docker build -t freeserf-wasm .
@@ -87,32 +92,43 @@ docker build -t freeserf-wasm .
 
 ---
 
-## ❓ Warum SDL2 und nicht SDL3?
+## 🌐 GitHub Pages
 
-Der Freeserf-Master ist im Oktober 2026 auf **SDL3** umgestiegen. Für den
-WebAssembly-Port bleibt dieses Repository bewusst auf **SDL2**, weil:
-
-* **Emscripten bietet keine SDL3_mixer- und SDL3_image-Ports** – SDL2_mixer,
-  SDL2_image und SDL2_ttf sind dagegen vollständig als Emscripten-Ports
-  verfügbar und ausgereift.
-* SDL2 ist im Browser (WebGL/Canvas, WebAudio) stabil und gut getestet.
-* Die komplette Spiellogik (KI, Tutorials, Missionen, UI, Daten) ist
-  plattformunabhängig und stammt unverändert aus dem aktuellen Master.
-
-Die Plattform-Schicht (`video-sdl`, `audio-sdlmixer`, `event_loop-sdl`,
-`font-sdl`, `sprite-file-sdl`) wurde dafür von SDL3 auf SDL2 zurückportiert.
+The game is hosted on GitHub Pages (see the repository settings). The
+`web/` folder is deployed automatically by the
+[`pages.yml`](.github/workflows/pages.yml) workflow on every push to `master`.
+The pre-built `FreeSerf.js`/`FreeSerf.wasm` are committed so the site works
+without a build step. Since the game data is copyrighted, the hosted version
+relies on the in-browser upload dialog.
 
 ---
 
-## 📁 Projektstruktur
+## ❓ Why SDL2 and not SDL3?
 
-* `web/` – die spielbare Web-App (index.html + Build-Ausgabe + Spieldaten)
-* `src/` – der Freeserf-Quellcode (Upstream + SDL2-Plattform)
-* `build-wasm.ps1` – Build-Skript ohne CMake
-* `Dockerfile` – Build-Container
-* `resources/` – TrueType-Font und UI-Bilder des Spiels
+The Freeserf master switched to **SDL3** in October 2026. This repository stays
+deliberately on **SDL2** for the WebAssembly port, because:
 
-## 📄 Lizenz
+* **Emscripten offers no SDL3_mixer and SDL3_image ports** – SDL2_mixer,
+  SDL2_image and SDL2_ttf, on the other hand, are fully available as mature
+  Emscripten ports.
+* SDL2 is stable and well-tested in the browser (WebGL/Canvas, WebAudio).
+* The complete game logic (AI, tutorials, missions, UI, data) is
+  platform-independent and comes unchanged from the current master.
 
-Freeserf ist unter der GPL-3.0 lizenziert (siehe `COPYING`). Die Spieldaten des
-Originals unterliegen dem Copyright des jeweiligen Rechteinhabers.
+The platform layer (`video-sdl`, `audio-sdlmixer`, `event_loop-sdl`,
+`font-sdl`, `sprite-file-sdl`) was ported back from SDL3 to SDL2 for this.
+
+---
+
+## 📁 Project structure
+
+* `web/` – the playable web app (index.html + build output + game data)
+* `src/` – the Freeserf source code (upstream + SDL2 platform)
+* `build-wasm.ps1` – build script without CMake
+* `Dockerfile` – build container
+* `resources/` – the game's TrueType font and UI images
+
+## 📄 License
+
+Freeserf is licensed under GPL-3.0 (see `COPYING`). The original game data is
+subject to the copyright of the respective rights holder.
