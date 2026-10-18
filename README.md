@@ -86,9 +86,86 @@ cmake --build build
 
 ### With Docker
 
+The `Dockerfile` builds the **Tizen widget** (`.wgt`) for Samsung Smart TVs, not
+the plain WASM build. See [Tizen TV](#tizen-tv) below.
+
+---
+
+## 📺 Tizen TV
+
+Freeserf runs as a **Tizen widget** (`.wgt`) on Samsung Smart TVs (Tizen 5.5+).
+The app always runs **fullscreen** – only the game window, no frame or menus –
+and supports the TV's **pointer device** (mouse) as well as the remote control.
+
+### Game data from USB stick
+
+Like GB-EMU_Tizen loads ROMs from a USB stick, the Tizen app scans every
+mounted USB storage for the original Settlers 1 data files:
+
+| File    | Language   |
+|---------|------------|
+| `SPAE.PA` | English  |
+| `SPAD.PA` | German   |
+| `SPAF.PA` | French   |
+| `SPAU.PA` | US English |
+
+Plug a USB stick with these files into the TV and start the app – it finds and
+loads them automatically. If no data is found, the app shows a hint screen.
+
+### Build the WGT
+
+**Windows:**
+
 ```
-docker build -t freeserf-wasm .
+build.bat
 ```
+
+This builds the Docker image (Tizen Studio CLI + Emscripten + Freeserf compiled
+to WebAssembly), assembles the Tizen widget (`config.xml`, `icon.png`,
+`index.html`, `FreeSerf.js/.wasm`, `resources/`), signs and packages it, and
+extracts `FreeSerf.wgt` to the current directory.
+
+**Manually:**
+
+```
+docker build -t freeserf-tizen .
+docker create --name freeserf-tmp freeserf-tizen
+docker cp freeserf-tmp:/home/freeserf/FreeSerf.wgt .
+docker rm freeserf-tmp
+```
+
+> **Apple Silicon note:** use `--platform linux/amd64` – Tizen Studio only ships
+> x86-64 binaries.
+
+### Build in GitHub Actions
+
+The [`tizen.yml`](.github/workflows/tizen.yml) workflow (manual dispatch) builds
+the WGT in the action and creates a GitHub release with `FreeSerf.wgt`
+attached. Enter a version (e.g. `1.2`) for a proper release, or leave it empty
+for a timestamped pre-release.
+
+### Install on the TV
+
+1. Enable **Developer Mode** on the TV (Apps screen → press `1 2 3 4 5` → toggle
+   Developer Mode = ON → enter your PC's LAN IP → reboot).
+2. Install the `.wgt` with the
+   [Samsung Jellyfin Installer](https://github.com/Jellyfin2Samsung/Samsung-Jellyfin-Installer)
+   or [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung/releases/latest).
+3. Launch **FreeSerf** from the TV's app menu.
+
+### Remote control mapping
+
+| Remote key        | In-game action        |
+|-------------------|-----------------------|
+| D-pad arrows      | Scroll map            |
+| OK / Enter        | Confirm               |
+| Back / Return     | Cancel / back         |
+| Red / Green / Yellow / Blue | F1 / F2 / F3 / F4 |
+| Channel up / down | Page up / down (scroll) |
+| Play / Pause      | Pause (space)         |
+| Rewind / Fast-forward | F5 / F6            |
+
+The pointer device (mouse) works directly on the game canvas via SDL2.
 
 ---
 
@@ -123,9 +200,13 @@ The platform layer (`video-sdl`, `audio-sdlmixer`, `event_loop-sdl`,
 ## 📁 Project structure
 
 * `web/` – the playable web app (index.html + build output + game data)
+* `tizen/` – fullscreen Tizen wrapper (`index.html` with USB data loading and
+  remote control support)
+* `res/` – Tizen widget config (`config.xml`) and app icon
 * `src/` – the Freeserf source code (upstream + SDL2 platform)
 * `build-wasm.ps1` – build script without CMake
-* `Dockerfile` – build container
+* `Dockerfile` – Tizen widget build container (Tizen Studio CLI + Emscripten)
+* `build.bat` – local Tizen WGT build script
 * `resources/` – the game's TrueType font and UI images
 
 ## 📄 License
