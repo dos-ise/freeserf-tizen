@@ -4,6 +4,8 @@
 name: Release FreeSerf Tizen
 
 on:
+  push:
+    branches: [dos-ise-tizen-wgt-build]
   workflow_dispatch:
     inputs:
       version:
@@ -32,14 +34,21 @@ jobs:
       - name: Remove temporary container
         run: docker rm freeserf-tmp
 
+      - name: Upload FreeSerf.wgt artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeSerf.wgt
+          path: ./FreeSerf.wgt
+
       - name: Generate timestamp number
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           TIMESTAMP=$(TZ="CET" date +"%Y.%m%d.%H%M")
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
 
       # Only runs for the timestamped pre-release flow, not for versioned releases.
       - name: Delete existing GitHub pre-releases
-        if: ${{ github.event.inputs.version == '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version == '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -67,6 +76,7 @@ jobs:
       # it creates a proper release (e.g. v1.2); otherwise a timestamped pre-release.
       # --generate-notes collects all commits since the last tag as release notes.
       - name: Create GitHub release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
