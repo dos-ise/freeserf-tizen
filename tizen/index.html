@@ -328,7 +328,14 @@
         function startGame() {
             if (gameStarted) return;
             gameStarted = true;
-            document.getElementById('loadingOverlay').classList.add('hidden');
+
+            // Keep the loading overlay visible while the game initializes
+            // (data loading + map generation can take a while on the TV) -
+            // hide it once the first frame has had time to render.
+            var statusText = document.getElementById('statusText');
+            if (statusText) {
+                statusText.textContent = 'Loading game...';
+            }
 
             var canvas = document.getElementById('canvas');
             canvas.focus();
@@ -343,6 +350,12 @@
             if (typeof fitCanvasToScreen === 'function') {
                 fitCanvasToScreen();
             }
+
+            // Hide the overlay once the game has had time to render its
+            // first frame (map generation can take a while on the TV).
+            setTimeout(function () {
+                document.getElementById('loadingOverlay').classList.add('hidden');
+            }, 8000);
         }
 
         function writeFileToVFS(instance, path, buffer) {
@@ -356,6 +369,24 @@
         // ============================================================================
 
         var DATA_FILES = ['SPAE.PA', 'SPAD.PA', 'SPAF.PA', 'SPAU.PA'];
+
+        // Wrap a promise with a timeout so a slow/hung Tizen filesystem call
+        // cannot block the app forever.
+        function withTimeout(promise, ms, label) {
+            return new Promise(function (resolve, reject) {
+                var timer = setTimeout(function () {
+                    console.warn('[USB] Timeout:', label);
+                    reject(new Error('Timeout: ' + label));
+                }, ms);
+                promise.then(function (v) {
+                    clearTimeout(timer);
+                    resolve(v);
+                }, function (e) {
+                    clearTimeout(timer);
+                    reject(e);
+                });
+            });
+        }
 
         // Check whether game data files are bundled in the widget (data/ folder)
         function checkBundledData() {
@@ -456,27 +487,33 @@
         }
 
         // Scan every mounted USB storage for SPA*.PA files and read them.
+        // Each filesystem call is wrapped in a timeout so a hung storage
+        // cannot block the app.
         function findDataOnUsb() {
-            return listUsbStorages().then(function (storages) {
+            return withTimeout(listUsbStorages(), 5000, 'listStorages').then(function (storages) {
                 var results = [];
                 var chain = Promise.resolve();
 
                 storages.forEach(function (storage) {
                     chain = chain.then(function () {
-                        return resolveStorage(storage.label).then(function (root) {
-                            return listPaFiles(root).then(function (paFiles) {
-                                var reads = paFiles.map(function (f) {
-                                    return readFileAsBytes(f).then(function (bytes) {
-                                        return { filename: f.name.toUpperCase(), buffer: bytes };
+                        return withTimeout(resolveStorage(storage.label), 5000, 'resolve ' + storage.label)
+                            .then(function (root) {
+                                return withTimeout(listPaFiles(root), 5000, 'listFiles ' + storage.label)
+                                    .then(function (paFiles) {
+                                        var reads = paFiles.map(function (f) {
+                                            return withTimeout(readFileAsBytes(f), 30000, 'read ' + f.name)
+                                                .then(function (bytes) {
+                                                    return { filename: f.name.toUpperCase(), buffer: bytes };
+                                                });
+                                        });
+                                        return Promise.all(reads).then(function (loaded) {
+                                            results = results.concat(loaded);
+                                        });
                                     });
-                                });
-                                return Promise.all(reads).then(function (loaded) {
-                                    results = results.concat(loaded);
-                                });
+                            })
+                            .catch(function (err) {
+                                console.warn('[USB] Skipping storage', storage.label, ':', err);
                             });
-                        }).catch(function (err) {
-                            console.warn('[USB] Skipping storage', storage.label, ':', err);
-                        });
                     });
                 });
 
@@ -537,6 +574,9 @@
 
         // Scale the canvas to fill the screen while preserving the aspect
         // ratio (same approach as GB-EMU_Tizen's fitCaseToScreen).
+        // translate(-50%,-50%) centers the canvas: top/left 50% positions the
+        // top-left corner at the screen center, the translate moves the canvas
+        // so its own center lands there before scaling.
         function fitCanvasToScreen() {
             var canvas = document.getElementById('canvas');
             if (!canvas || canvas.width === 0 || canvas.height === 0) return;
@@ -544,7 +584,7 @@
                 window.innerHeight / canvas.height,
                 window.innerWidth / canvas.width
             );
-            canvas.style.transform = 'scale(' + scale + ')';
+            canvas.style.transform = 'translate(-50%, -50%) scale(' + scale + ')';
         }
         window.addEventListener('resize', fitCanvasToScreen);
         window.addEventListener('load', fitCanvasToScreen);
