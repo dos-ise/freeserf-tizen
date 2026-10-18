@@ -80,6 +80,8 @@
             justify-content: center;
             z-index: 100;
             transition: opacity 0.4s ease;
+            overflow-y: auto;
+            padding: 20px;
         }
 
             #loadingOverlay.hidden {
@@ -275,12 +277,19 @@
                 const statusText = document.getElementById('statusText');
                 const startButton = document.getElementById('startButton');
                 const loadingOverlay = document.getElementById('loadingOverlay');
+                const uploadArea = document.getElementById('uploadArea');
 
                 if (!text) {
-                    statusText.textContent = 'Ready to play!';
-                    startButton.classList.add('visible');
+                    // Nur "Ready to play!" zeigen, wenn kein Upload-Dialog aktiv ist
+                    if (!uploadArea.classList.contains('visible')) {
+                        statusText.textContent = 'Ready to play!';
+                        startButton.classList.add('visible');
+                    }
                 } else if (text.includes('Running')) {
-                    loadingOverlay.classList.add('hidden');
+                    // Overlay nur verstecken, wenn das Spiel wirklich gestartet ist
+                    if (gameStarted) {
+                        loadingOverlay.classList.add('hidden');
+                    }
                 } else {
                     statusText.textContent = text;
                 }
@@ -406,8 +415,27 @@
             instance.FS.writeFile(path, new Uint8Array(buffer));
         }
 
-        // Lade Game Data Files zur Laufzeit ins virtuelle Dateisystem
-        function loadGameData() {
+        // Prüft sofort, ob Spieldaten im data/-Ordner liegen (parallel zur Wasm-Ladung)
+        function checkForData() {
+            var dataFiles = ['SPAE.PA', 'SPAD.PA', 'SPAF.PA', 'SPAU.PA'];
+            return Promise.all(dataFiles.map(function (filename) {
+                return fetch('data/' + filename)
+                    .then(function (response) {
+                        if (!response.ok) {
+                            throw new Error('Not found');
+                        }
+                        return response.arrayBuffer().then(function (buffer) {
+                            return { filename: filename, buffer: buffer };
+                        });
+                    })
+                    .catch(function () {
+                        return null;
+                    });
+            }));
+        }
+
+        // Erstellt die Wasm-Instanz und lädt die Ressourcen (TrueType-Font, UI-Bilder)
+        function initGame() {
             return new Promise(function (resolve, reject) {
                 FreeSerf(Module).then(function (instance) {
                     FreeserfInstance = instance;
@@ -420,34 +448,10 @@
                         instance.FS.mkdir('/resources');
                     } catch (e) { }
 
-                    // Lade Game Data Files
-                    var dataFiles = ['SPAE.PA', 'SPAD.PA', 'SPAF.PA', 'SPAU.PA'];
-                    var loadPromises = [];
-
-                    dataFiles.forEach(function (filename) {
-                        var promise = fetch('data/' + filename)
-                            .then(function (response) {
-                                if (!response.ok) {
-                                    throw new Error('Not found');
-                                }
-                                return response.arrayBuffer();
-                            })
-                            .then(function (buffer) {
-                                writeFileToVFS(instance, '/data/' + filename, buffer);
-                                return filename;
-                            })
-                            .catch(function () {
-                                // Datei nicht gefunden - OK, versuche nächste
-                                return null;
-                            });
-
-                        loadPromises.push(promise);
-                    });
-
-                    // Lade die Ressourcen (TrueType-Font, UI-Bilder)
+                    // Lade die Ressourcen
                     var resourceFiles = ['settlers.ttf', 'button-advanced.png'];
-                    resourceFiles.forEach(function (filename) {
-                        var promise = fetch('resources/' + filename)
+                    var loadPromises = resourceFiles.map(function (filename) {
+                        return fetch('resources/' + filename)
                             .then(function (response) {
                                 if (!response.ok) {
                                     throw new Error('Not found');
@@ -462,43 +466,58 @@
                                 // Ressource nicht gefunden - OK, Fallback wird genutzt
                                 return null;
                             });
-
-                        loadPromises.push(promise);
                     });
 
-                    // Warte bis alle Dateien geladen wurden
-                    Promise.all(loadPromises).then(function (results) {
-                        var loaded = results.filter(function (r) { return r !== null; });
-                        var dataLoaded = loaded.some(function (r) {
-                            return dataFiles.indexOf(r) !== -1;
-                        });
-                        resolve({ instance: instance, dataLoaded: dataLoaded });
+                    Promise.all(loadPromises).then(function () {
+                        resolve(instance);
                     }).catch(reject);
 
                 }).catch(reject);
             });
         }
 
-        // Starte den Ladevorgang
-        loadGameData()
-            .then(function (result) {
-                if (result.dataLoaded) {
-                    // Spieldaten gefunden - Spiel starten
+        function showUploadArea() {
+            document.getElementById('spinner').style.display = 'none';
+            document.getElementById('startButton').classList.remove('visible');
+            document.getElementById('statusText').textContent = 'Game data not found';
+            document.getElementById('uploadArea').classList.add('visible');
+        }
+
+        // Starte Daten-Check und Wasm-Ladung parallel
+        var dataCheck = checkForData();
+        var gameInit = initGame();
+
+        dataCheck.then(function (results) {
+            var found = results.filter(function (r) { return r !== null; });
+
+            if (found.length > 0) {
+                // Spieldaten gefunden - in VFS schreiben und Spiel starten
+                gameInit.then(function (instance) {
+                    found.forEach(function (r) {
+                        writeFileToVFS(instance, '/data/' + r.filename, r.buffer);
+                    });
                     startGame();
-                } else {
-                    // Keine Spieldaten gefunden - Upload anbieten statt Fehler
-                    document.getElementById('spinner').style.display = 'none';
-                    document.getElementById('startButton').classList.remove('visible');
-                    document.getElementById('statusText').textContent = 'Game data not found';
-                    document.getElementById('uploadArea').classList.add('visible');
-                }
-            })
-            .catch(function (err) {
-                console.error('Load error:', err);
-                const statusText = document.getElementById('statusText');
-                statusText.textContent = 'Failed to load the game.';
-                statusText.style.color = '#ff5252';
-            });
+                });
+            } else {
+                // Keine Spieldaten gefunden - Upload anbieten statt Fehler
+                showUploadArea();
+            }
+        }).catch(function (err) {
+            console.error('Data check error:', err);
+            showUploadArea();
+        });
+
+        // Falls Dateien gewählt wurden, bevor die Instanz bereit war
+        var pendingFiles = null;
+        gameInit.then(function (instance) {
+            if (pendingFiles) {
+                pendingFiles.forEach(function (f) {
+                    writeFileToVFS(instance, '/data/' + f.name, f.buffer);
+                });
+                pendingFiles = null;
+                startGame();
+            }
+        });
 
         // Upload: SPA*.PA Dateien ins virtuelle Dateisystem schreiben und starten
         function handleFiles(source) {
@@ -517,12 +536,20 @@
 
             var reads = paFiles.map(function (f) {
                 return f.arrayBuffer().then(function (buffer) {
-                    writeFileToVFS(FreeserfInstance, '/data/' + f.name.toUpperCase(), buffer);
+                    return { name: f.name.toUpperCase(), buffer: buffer };
                 });
             });
 
-            Promise.all(reads).then(function () {
-                startGame();
+            Promise.all(reads).then(function (files) {
+                if (FreeserfInstance) {
+                    files.forEach(function (f) {
+                        writeFileToVFS(FreeserfInstance, '/data/' + f.name, f.buffer);
+                    });
+                    startGame();
+                } else {
+                    // Instanz noch nicht bereit - Dateien merken
+                    pendingFiles = files;
+                }
             }).catch(function (err) {
                 console.error('Upload error:', err);
                 statusText.textContent = 'Failed to load the selected files.';
