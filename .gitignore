@@ -40,3 +40,15 @@ xcuserdata
 *.unsuccessfulbuild
 *.VC.db
 *.VC.VC.opendb
+
+# Build directories
+build*/
+
+# Local game data (copyrighted, not committed)
+web/data/
+
+
+# Emscripten build output
+web/FreeSerf.js
+web/FreeSerf.wasm
+

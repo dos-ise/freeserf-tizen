@@ -533,20 +533,19 @@
         // Save Game
         function saveGame() {
             try {
-                // Trigger Freeserf's save function (anpassen an tatsächliche API)
-                if (Module._save_game) {
-                    Module._save_game();
-                }
-
                 // Sync zu IndexedDB
-                FS.syncfs(false, function (err) {
-                    if (err) {
-                        alert('Fehler beim Speichern: ' + err);
-                    } else {
-                        console.log('Game saved to IndexedDB');
-                        alert('Spiel gespeichert!');
-                    }
-                });
+                if (FreeserfInstance && FreeserfInstance.FS) {
+                    FreeserfInstance.FS.syncfs(false, function (err) {
+                        if (err) {
+                            alert('Fehler beim Speichern: ' + err);
+                        } else {
+                            console.log('Game saved to IndexedDB');
+                            alert('Spiel gespeichert!');
+                        }
+                    });
+                } else {
+                    alert('Spiel läuft noch nicht');
+                }
             } catch (e) {
                 console.error('Save failed:', e);
                 alert('Speichern nicht verfügbar');
@@ -557,19 +556,18 @@
         function loadGame() {
             try {
                 // Sync von IndexedDB
-                FS.syncfs(true, function (err) {
-                    if (err) {
-                        alert('Fehler beim Laden: ' + err);
-                    } else {
-                        console.log('Saves loaded from IndexedDB');
-
-                        // Trigger Freeserf's load function
-                        if (Module._load_game) {
-                            Module._load_game();
+                if (FreeserfInstance && FreeserfInstance.FS) {
+                    FreeserfInstance.FS.syncfs(true, function (err) {
+                        if (err) {
+                            alert('Fehler beim Laden: ' + err);
+                        } else {
+                            console.log('Saves loaded from IndexedDB');
+                            alert('Spiel geladen!');
                         }
-                        alert('Spiel geladen!');
-                    }
-                });
+                    });
+                } else {
+                    alert('Spiel läuft noch nicht');
+                }
             } catch (e) {
                 console.error('Load failed:', e);
                 alert('Laden nicht verfügbar');
@@ -614,7 +612,7 @@
 
         // Prevent accidental page unload
         window.addEventListener('beforeunload', function (e) {
-            if (Module.HEAPU8) { // Check if game is running
+            if (FreeserfInstance && FreeserfInstance.HEAPU8) { // Check if game is running
                 e.preventDefault();
                 e.returnValue = '';
                 return '';

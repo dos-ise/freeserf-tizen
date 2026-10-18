@@ -60,7 +60,8 @@ EventLoopSDL::EventLoopSDL()
   , drag_x(0)
   , drag_y(0)
   , last_click_x(0)
-  , last_click_y(0) {
+  , last_click_y(0)
+  , last_step_time(0) {
   SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_TIMER);
 
   eventUserTypeStep = SDL_RegisterEvents(2);
@@ -326,6 +327,20 @@ EventLoopSDL::run_iteration() {
           SDL_FlushEvent(eventUserTypeStep);
         }
     }
+  }
+
+  // Time-based update/draw for the Emscripten main loop.
+  // The SDL step timer is not started in the browser build, so update/draw
+  // is driven directly from the main loop at TICK_LENGTH intervals.
+  unsigned int now = SDL_GetTicks();
+  if (now - last_step_time >= TICK_LENGTH) {
+    last_step_time = now;
+    if (screen == nullptr) {
+      screen = gfx.get_screen_frame();
+    }
+    notify_update();
+    notify_draw(screen);
+    gfx.swap_buffers();
   }
 }
 

@@ -54,6 +54,7 @@ class EventLoopSDL : public EventLoop {
   unsigned int last_click[6];
   int last_click_x;
   int last_click_y;
+  unsigned int last_step_time;
 
  public:
   EventLoopSDL();

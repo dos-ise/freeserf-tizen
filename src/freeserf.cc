@@ -116,6 +116,7 @@ main(int argc, char *argv[]) {
   Data &data = Data::get_instance();
   if (!data.load(data_dir)) {
     Log::Error["main"] << "Could not load game data.";
+#ifndef __EMSCRIPTEN__
     /* Without the data there is no font to show it in the game. */
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "FreeSerf",
                              "Could not find the game data.\n\n"
@@ -123,6 +124,7 @@ main(int argc, char *argv[]) {
                              "(SPAE.PA, SPAD.PA, SPAF.PA or SPAU.PA) into "
                              "the FreeSerf data directory, or give its "
                              "directory with -g DATA-PATH.", nullptr);
+#endif
     return EXIT_FAILURE;
   }
 
@@ -131,10 +133,15 @@ main(int argc, char *argv[]) {
   Graphics &gfx = Graphics::get_instance();
 
   /* TODO move to right place */
-  Audio &audio = Audio::get_instance();
-  Audio::PPlayer player = audio.get_music_player();
-  if (player) {
-    Audio::PTrack t = player->play_track(Audio::TypeMidiTrack0);
+  try {
+    Audio &audio = Audio::get_instance();
+    Audio::PPlayer player = audio.get_music_player();
+    if (player) {
+      Audio::PTrack t = player->play_track(Audio::TypeMidiTrack0);
+    }
+  } catch (const ExceptionFreeserf &e) {
+    /* Audio is optional - the game must still start without it. */
+    Log::Error["main"] << "Audio initialization failed: " << e.what();
   }
 
   GameManager &game_manager = GameManager::get_instance();

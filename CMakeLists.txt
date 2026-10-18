@@ -42,41 +42,47 @@ if(EMSCRIPTEN)
     
     # SDL2 über Emscripten Ports
     # (Die Targets werden von cmake/FindSDL2.cmake erstellt)
+    # Muss auch beim Kompilieren aktiv sein, damit die SDL-Header gefunden werden.
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL=2")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL_MIXER=2")
-    
-    # WICHTIG: Wir verwenden KEIN --preload-file!
-    # Game Data Files werden zur Laufzeit mit FS_createPreloadedFile geladen
-    
-    # Memory Settings
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sALLOW_MEMORY_GROWTH=1")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sINITIAL_MEMORY=67108864")  # 64MB
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sMAXIMUM_MEMORY=2147483648") # 2GB
-    
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL_IMAGE=2")
+    # Nur WAV/MIDI/MOD - kein OGG (vermeidet den ogg-Port-Download)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sSDL2_MIXER_FORMATS=mod,mid")
+
     # C++ Exception Support
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
-    
-    # Export FS functions for runtime file loading
-    # Note: syncfs ist Teil von FS, nicht separat exportierbar
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']")
-    
-    # Optimizations
+
+    # Optimierungen
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -flto")
     endif()
-    
+
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -gsource-map -sASSERTIONS=1")
     endif()
-    
+
+    # Linker-Flags (Emscripten)
+    # MODULARIZE: FreeSerf.js exportiert eine Factory-Funktion (FreeSerf(Module)),
+    # die von web/index.html verwendet wird.
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=FreeSerf")
+
+    # Memory Settings
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sALLOW_MEMORY_GROWTH=1")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sINITIAL_MEMORY=67108864")   # 64MB
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sMAXIMUM_MEMORY=2147483648") # 2GB
+
     # Browser Environment
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sENVIRONMENT=web")
-    
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sENVIRONMENT=web")
+
+    # Export FS für Laufzeit-Dateiladen (Spieldaten)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,callMain")
+
     # Filesystem Support (für Savegames via IndexedDB)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -lidbfs.js")
-    
-    message(STATUS "Game data will be loaded at runtime via FS_createPreloadedFile")
-    message(STATUS "Emscripten flags: ${CMAKE_CXX_FLAGS}")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lidbfs.js")
+
+    message(STATUS "Game data will be loaded at runtime via FS")
+    message(STATUS "Emscripten CXX flags: ${CMAKE_CXX_FLAGS}")
+    message(STATUS "Emscripten LINK flags: ${CMAKE_EXE_LINKER_FLAGS}")
     message(STATUS "==============================================")
 endif()
 # ============================================================================
