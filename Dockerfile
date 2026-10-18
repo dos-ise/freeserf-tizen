@@ -82,11 +82,14 @@ RUN mkdir -p cmake && \
 ENV WASM_COMPAT="-mno-bulk-memory -mno-bulk-memory-opt -mno-nontrapping-fptoint"
 
 # Configure with CMake (emcmake sets the Emscripten toolchain itself)
+# FREESERF_WASM_INITIAL_MEMORY=256MB: avoid WASM memory growth after the
+# WebGL textures are created (growth invalidates textures -> black flicker).
 RUN bash -lc "source /home/freeserf/emsdk/emsdk_env.sh && \
     emcmake cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DENABLE_TESTS=OFF \
         -DENABLE_SDL2_IMAGE=OFF \
+        -DFREESERF_WASM_INITIAL_MEMORY=268435456 \
         -DCMAKE_C_FLAGS='$WASM_COMPAT' \
         -DCMAKE_CXX_FLAGS='$WASM_COMPAT' \
         -DCMAKE_EXE_LINKER_FLAGS='-sWASM_BIGINT=0 $WASM_COMPAT' \
