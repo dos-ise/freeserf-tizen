@@ -1,4 +1,4 @@
-/*
+﻿/*
  * event_loop-sdl.cc - User and system events handling
  *
  * Copyright (C) 2012-2018  Jon Lund Steffensen <jonlst@gmail.com>
@@ -23,18 +23,14 @@
 
 #include <SDL.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
 #include "src/log.h"
 #include "src/gfx.h"
 #include "src/freeserf.h"
 #include "src/video-sdl.h"
-
-// ============================================================================
-// EMSCRIPTEN / WEBASSEMBLY SUPPORT
-// ============================================================================
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
-// ============================================================================
 
 EventLoop &
 EventLoop::get_instance() {
@@ -51,59 +47,25 @@ EventLoop::get_instance() {
 
 EventLoopSDL::EventLoopSDL()
   : zoom_factor(1.f)
+  , zoom_level(1.f)
   , screen_factor_x(1.f)
   , screen_factor_y(1.f)
-  , running(false)
-  , timer_id(0)
-  , screen(nullptr)
   , drag_button(0)
   , drag_x(0)
   , drag_y(0)
   , last_click_x(0)
   , last_click_y(0)
-  , last_step_time(0) {
-  SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_TIMER);
-
-  eventUserTypeStep = SDL_RegisterEvents(2);
-  if (eventUserTypeStep == (Uint32)-1) {
-    throw ExceptionFreeserf("Failed to register SDL event");
-  }
-  eventUserTypeStep++;
-  
-  // Initialize last_click array
-  for (int i = 0; i < 6; i++) {
-    last_click[i] = 0;
-  }
-}
-
-EventLoopSDL::~EventLoopSDL() {
-  if (timer_id != 0) {
-    SDL_RemoveTimer(timer_id);
-    timer_id = 0;
-  }
-  if (screen != nullptr) {
-    delete screen;
-    screen = nullptr;
-  }
-}
-
-Uint32
-EventLoopSDL::timer_callback(Uint32 interval, void *param) {
-  EventLoopSDL *eventLoop = static_cast<EventLoopSDL*>(param);
-  SDL_Event event;
-  event.type = eventLoop->eventUserTypeStep;
-  event.user.type = eventLoop->eventUserTypeStep;
-  event.user.code = 0;
-  event.user.data1 = 0;
-  event.user.data2 = 0;
-  SDL_PushEvent(&event);
-
-  return interval;
+  , screen(nullptr)
+  , next_step(0)
+  , running(false) {
+  for (unsigned int &click : last_click) click = 0;
+  SDL_InitSubSystem(SDL_INIT_EVENTS);
 }
 
 void
 EventLoopSDL::quit() {
   SDL_Event event;
+  std::memset(&event, 0, sizeof(event));
   event.type = SDL_USEREVENT;
   event.user.type = SDL_USEREVENT;
   event.user.code = EventUserTypeQuit;
@@ -117,472 +79,356 @@ EventLoopSDL::deferred_call(DeferredCall call, void *data) {
   deferred_calls.push_back(call);
 
   SDL_Event event;
+  std::memset(&event, 0, sizeof(event));
   event.type = SDL_USEREVENT;
   event.user.type = SDL_USEREVENT;
   event.user.code = EventUserTypeCall;
   SDL_PushEvent(&event);
 }
 
-// ============================================================================
-// EMSCRIPTEN MAIN LOOP: run_iteration()
-// ============================================================================
-// This function runs ONE iteration of the event loop.
-// For Emscripten, this is called repeatedly by the browser.
-// For desktop, this is called in a while loop.
-void
-EventLoopSDL::run_iteration() {
+// event_loop() has been turned into a SDL based loop.
+// The code for one iteration of the original game_loop is in game_loop_iter.
+/* Handle one SDL event; false when the loop has to end. */
+bool
+EventLoopSDL::handle_sdl_event(const SDL_Event &event) {
   Graphics &gfx = Graphics::get_instance();
-  
-  // Initialize screen on first call
-  if (screen == nullptr) {
-    screen = gfx.get_screen_frame();
-  }
+  unsigned int current_ticks = static_cast<unsigned int>(SDL_GetTicks());
 
-  SDL_Event event;
-  unsigned int current_ticks = SDL_GetTicks();
-  
-  // Process all pending events (non-blocking)
-  while (SDL_PollEvent(&event)) {
-    switch (event.type) {
-      case SDL_MOUSEBUTTONUP:
-        if (drag_button == event.button.button) {
-          drag_button = 0;
+  switch (event.type) {
+    case SDL_MOUSEBUTTONUP: {
+      if (drag_button == event.button.button) {
+        drag_button = 0;
+      }
+
+      if (event.button.button <= 3) {
+        int x = static_cast<int>(static_cast<float>(event.button.x) *
+                                 zoom_factor * screen_factor_x);
+        int y = static_cast<int>(static_cast<float>(event.button.y) *
+                                 zoom_factor * screen_factor_y);
+        notify_click(x, y, (Event::Button)event.button.button);
+
+        int bx = static_cast<int>(event.button.x);
+        int by = static_cast<int>(event.button.y);
+        if (current_ticks - last_click[event.button.button] <
+              MOUSE_TIME_SENSITIVITY &&
+            bx >= (last_click_x - MOUSE_MOVE_SENSITIVITY) &&
+            bx <= (last_click_x + MOUSE_MOVE_SENSITIVITY) &&
+            by >= (last_click_y - MOUSE_MOVE_SENSITIVITY) &&
+            by <= (last_click_y + MOUSE_MOVE_SENSITIVITY)) {
+          notify_dbl_click(x, y, (Event::Button)event.button.button);
         }
 
-        if (event.button.button <= 3) {
-          int x = static_cast<int>(static_cast<float>(event.button.x) *
-                                   zoom_factor * screen_factor_x);
-          int y = static_cast<int>(static_cast<float>(event.button.y) *
-                                   zoom_factor * screen_factor_y);
-          notify_click(x, y, (Event::Button)event.button.button);
-
-          if (current_ticks - last_click[event.button.button] <
-                MOUSE_TIME_SENSITIVITY &&
-              event.button.x >= (last_click_x - MOUSE_MOVE_SENSITIVITY) &&
-              event.button.x <= (last_click_x + MOUSE_MOVE_SENSITIVITY) &&
-              event.button.y >= (last_click_y - MOUSE_MOVE_SENSITIVITY) &&
-              event.button.y <= (last_click_y + MOUSE_MOVE_SENSITIVITY)) {
-            notify_dbl_click(x, y, (Event::Button)event.button.button);
-          }
-
-          last_click[event.button.button] = current_ticks;
-          last_click_x = event.button.x;
-          last_click_y = event.button.y;
-        }
-        break;
-      case SDL_MOUSEBUTTONDOWN:
-        break;
-      case SDL_MOUSEMOTION:
-        for (int button = 1; button <= 3; button++) {
-          if (event.motion.state & SDL_BUTTON(button)) {
-            if (drag_button == 0) {
-              drag_button = button;
-              drag_x = event.motion.x;
-              drag_y = event.motion.y;
-              break;
-            }
-
-            int x = static_cast<int>(static_cast<float>(drag_x) *
-                                     zoom_factor * screen_factor_x);
-            int y = static_cast<int>(static_cast<float>(drag_y) *
-                                     zoom_factor * screen_factor_y);
-            int dx = event.motion.x - drag_x;
-            int dy = event.motion.y - drag_y;
-            if ((dx == 0) && (dy == 0)) {
-                break;
-            }
-
-            notify_drag(x, y, dx, dy, (Event::Button)drag_button);
-
-            SDL_WarpMouseInWindow(nullptr, drag_x, drag_y);
-
+        last_click[event.button.button] = current_ticks;
+        last_click_x = bx;
+        last_click_y = by;
+      }
+      break;
+    }
+    case SDL_MOUSEBUTTONDOWN:
+      break;
+    case SDL_MOUSEMOTION: {
+      int mx = static_cast<int>(event.motion.x);
+      int my = static_cast<int>(event.motion.y);
+      for (int button = 1; button <= 3; button++) {
+        if (event.motion.state & SDL_BUTTON(button)) {
+          if (drag_button == 0) {
+            drag_button = button;
+            drag_x = mx;
+            drag_y = my;
             break;
           }
+
+          int x = static_cast<int>(static_cast<float>(drag_x) *
+                                   zoom_factor * screen_factor_x);
+          int y = static_cast<int>(static_cast<float>(drag_y) *
+                                   zoom_factor * screen_factor_y);
+          int dx = mx - drag_x;
+          int dy = my - drag_y;
+          if ((dx == 0) && (dy == 0)) {
+              break;
+          }
+
+          notify_drag(x, y, dx, dy, (Event::Button)drag_button);
+
+          SDL_WarpMouseInWindow(SDL_GetWindowFromID(event.motion.windowID),
+                                drag_x, drag_y);
+
+          break;
         }
-        break;
-      case SDL_MOUSEWHEEL: {
-        SDL_Keymod mod = SDL_GetModState();
-        if ((mod & KMOD_CTRL) != 0) {
-          zoom(0.2f * static_cast<float>(event.wheel.y));
+      }
+      break;
+    }
+    case SDL_MOUSEWHEEL: {
+      SDL_Keymod mod = SDL_GetModState();
+      if ((mod & KMOD_CTRL) != 0) {
+        int steps = event.wheel.y;
+        if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+          steps = -steps;
         }
+        if (steps != 0) {
+          zoom(0.2f * static_cast<float>(steps));
+        }
+      }
+      break;
+    }
+    case SDL_KEYDOWN: {
+      SDL_Keycode sym = event.key.keysym.sym;
+      if (sym == SDLK_q &&
+          (event.key.keysym.mod & KMOD_CTRL)) {
+        quit();
         break;
       }
-      case SDL_KEYDOWN: {
-        if (event.key.keysym.sym == SDLK_q &&
-            (event.key.keysym.mod & KMOD_CTRL)) {
-          quit();
+
+      unsigned char modifier = 0;
+      if (event.key.keysym.mod & KMOD_CTRL) {
+        modifier |= 1;
+      }
+      if (event.key.keysym.mod & KMOD_SHIFT) {
+        modifier |= 2;
+      }
+      if (event.key.keysym.mod & KMOD_ALT) {
+        modifier |= 4;
+      }
+
+      switch (sym) {
+        // Map scroll
+        case SDLK_UP: {
+          notify_drag(0, 0, 0, -32, Event::ButtonLeft);
+          break;
+        }
+        case SDLK_DOWN: {
+          notify_drag(0, 0, 0, 32, Event::ButtonLeft);
+          break;
+        }
+        case SDLK_LEFT: {
+          notify_drag(0, 0, -32, 0, Event::ButtonLeft);
+          break;
+        }
+        case SDLK_RIGHT: {
+          notify_drag(0, 0, 32, 0, Event::ButtonLeft);
           break;
         }
 
-        unsigned char modifier = 0;
-        if (event.key.keysym.mod & KMOD_CTRL) {
-          modifier |= 1;
-        }
-        if (event.key.keysym.mod & KMOD_SHIFT) {
-          modifier |= 2;
-        }
-        if (event.key.keysym.mod & KMOD_ALT) {
-          modifier |= 4;
-        }
+        case SDLK_PLUS:
+        case SDLK_KP_PLUS:
+        case SDLK_EQUALS:
+          notify_key_pressed('+', 0);
+          break;
+        case SDLK_MINUS:
+        case SDLK_KP_MINUS:
+          notify_key_pressed('-', 0);
+          break;
 
-        switch (event.key.keysym.sym) {
-          // Map scroll
-          case SDLK_UP: {
-            notify_drag(0, 0, 0, -32, Event::ButtonLeft);
-            break;
+        // Video
+        case SDLK_f:
+          if ((event.key.keysym.mod & KMOD_CTRL) &&
+              !(event.key.keysym.mod & KMOD_SHIFT)) {
+            gfx.set_fullscreen(!gfx.is_fullscreen());
+          } else {
+              // if this isn't handled the 'f' key
+              // doesn't work for savegame names
+              notify_key_pressed(sym, modifier);
           }
-          case SDLK_DOWN: {
-            notify_drag(0, 0, 0, 32, Event::ButtonLeft);
-            break;
-          }
-          case SDLK_LEFT: {
-            notify_drag(0, 0, -32, 0, Event::ButtonLeft);
-            break;
-          }
-          case SDLK_RIGHT: {
-            notify_drag(0, 0, 32, 0, Event::ButtonLeft);
-            break;
-          }
+          break;
+        case SDLK_RIGHTBRACKET:
+          zoom(-0.2f);
+          break;
+        case SDLK_LEFTBRACKET:
+          zoom(0.2f);
+          break;
 
-          case SDLK_PLUS:
-          case SDLK_KP_PLUS:
-          case SDLK_EQUALS:
-            notify_key_pressed('+', 0);
-            break;
-          case SDLK_MINUS:
-          case SDLK_KP_MINUS:
-            notify_key_pressed('-', 0);
-            break;
+        // Misc
+        case SDLK_F10:
+          notify_key_pressed('n', 1);
+          break;
 
-          // Video
-          case SDLK_f:
-            if (event.key.keysym.mod & KMOD_CTRL) {
-              gfx.set_fullscreen(!gfx.is_fullscreen());
-            } else {
-                // if this isn't handled the 'f' key
-                // doesn't work for savegame names
-                notify_key_pressed(event.key.keysym.sym, modifier);
-            }
-            break;
-          case SDLK_RIGHTBRACKET:
-            zoom(-0.2f);
-            break;
-          case SDLK_LEFTBRACKET:
-            zoom(0.2f);
-            break;
-
-          // Misc
-          case SDLK_F10:
-            notify_key_pressed('n', 1);
-            break;
-
-          default:
-            notify_key_pressed(event.key.keysym.sym, modifier);
-            break;
-        }
-
-        break;
+        default:
+          notify_key_pressed(sym, modifier);
+          break;
       }
-      case SDL_QUIT:
-        notify_key_pressed('c', 1);
-        running = false;
-        break;
-      case SDL_WINDOWEVENT:
-        if (SDL_WINDOWEVENT_SIZE_CHANGED == event.window.event) {
-          unsigned int width = event.window.data1;
-          unsigned int height = event.window.data2;
-          gfx.set_resolution(width, height, gfx.is_fullscreen());
-          gfx.get_screen_factor(&screen_factor_x, &screen_factor_y);
-          float factor = (gfx.get_zoom_factor() - 1);
-          zoom(-factor);
-          notify_resize(width, height);
-          zoom(factor);
-        }
-        break;
-      case SDL_USEREVENT:
-        switch (event.user.code) {
-          case EventUserTypeQuit:
-            running = false;
-            break;
-          case EventUserTypeCall: {
-            while (!deferred_calls.empty()) {
-              deferred_calls.front()(nullptr);
-              deferred_calls.pop_front();
-            }
-            break;
+
+      break;
+    }
+    case SDL_QUIT:
+      notify_key_pressed('c', 1);
+      break;
+    case SDL_WINDOWEVENT:
+      if (SDL_WINDOWEVENT_SIZE_CHANGED == event.window.event) {
+        unsigned int width = event.window.data1;
+        unsigned int height = event.window.data2;
+        gfx.set_resolution(width, height, gfx.is_fullscreen());
+        gfx.get_screen_factor(&screen_factor_x, &screen_factor_y);
+        apply_zoom();
+      }
+      break;
+    case SDL_RENDER_DEVICE_RESET:
+      /* All textures are gone, also the sprites. */
+      Image::clear_cache();
+      /* fall through */
+    case SDL_RENDER_TARGETS_RESET:
+      /* The contents of the render targets are gone (Direct3D on window
+         resize or device loss): make a new screen and draw everything
+         again. */
+      apply_zoom();
+      notify_invalidate();
+      break;
+    case SDL_USEREVENT:
+      switch (event.user.code) {
+        case EventUserTypeQuit:
+          return false;
+        case EventUserTypeCall: {
+          while (!deferred_calls.empty()) {
+            deferred_calls.front()(nullptr);
+            deferred_calls.pop_front();
           }
-          default:
-            break;
+          break;
         }
-        break;
-      default:
-        if (event.type == eventUserTypeStep) {
-          // Update and draw interface
-          notify_update();
-          notify_draw(screen);
-
-          // Swap video buffers
-          gfx.swap_buffers();
-
-          SDL_FlushEvent(eventUserTypeStep);
-        }
-    }
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
   }
 
-  // Time-based update/draw for the Emscripten main loop.
-  // The SDL step timer is not started in the browser build, so update/draw
-  // is driven directly from the main loop at TICK_LENGTH intervals.
-  unsigned int now = SDL_GetTicks();
-  if (now - last_step_time >= TICK_LENGTH) {
-    last_step_time = now;
-    if (screen == nullptr) {
-      screen = gfx.get_screen_frame();
-    }
-    notify_update();
-    notify_draw(screen);
-    gfx.swap_buffers();
-  }
+  return true;
 }
 
-// ============================================================================
-// DESKTOP MAIN LOOP: run()
-// ============================================================================
-// Traditional blocking event loop for desktop platforms.
-// For Emscripten, run_iteration() is called instead.
+/* The game advances in fixed steps of TICK_LENGTH ms, as the original on
+   the vertical blank. The steps follow the clock: when a frame took too
+   long, the missed steps are made up before the next drawing, up to
+   kMaxCatchUpSteps; beyond that the game slows down instead of freezing
+   the screen. Between the steps the loop waits for events. */
 void
 EventLoopSDL::run() {
-#ifdef __EMSCRIPTEN__
-  // Should never be called in Emscripten build
-  Log::Error["event_loop"] << "run() called in Emscripten build! Use run_iteration() instead.";
-  return;
-#else
-  timer_id = SDL_AddTimer(TICK_LENGTH, timer_callback, this);
-  if (timer_id == 0) {
-    Log::Error["event_loop"] << "Failed to add timer";
-    return;
-  }
+  static const int kMaxCatchUpSteps = 5;
 
   Graphics &gfx = Graphics::get_instance();
   gfx.get_screen_factor(&screen_factor_x, &screen_factor_y);
 
+  next_step = SDL_GetTicks() + TICK_LENGTH;
   running = true;
-  
-  SDL_Event event;
-  while (running && SDL_WaitEvent(&event)) {
-    unsigned int current_ticks = SDL_GetTicks();
-
-    switch (event.type) {
-      case SDL_MOUSEBUTTONUP:
-        if (drag_button == event.button.button) {
-          drag_button = 0;
-        }
-
-        if (event.button.button <= 3) {
-          int x = static_cast<int>(static_cast<float>(event.button.x) *
-                                   zoom_factor * screen_factor_x);
-          int y = static_cast<int>(static_cast<float>(event.button.y) *
-                                   zoom_factor * screen_factor_y);
-          notify_click(x, y, (Event::Button)event.button.button);
-
-          if (current_ticks - last_click[event.button.button] <
-                MOUSE_TIME_SENSITIVITY &&
-              event.button.x >= (last_click_x - MOUSE_MOVE_SENSITIVITY) &&
-              event.button.x <= (last_click_x + MOUSE_MOVE_SENSITIVITY) &&
-              event.button.y >= (last_click_y - MOUSE_MOVE_SENSITIVITY) &&
-              event.button.y <= (last_click_y + MOUSE_MOVE_SENSITIVITY)) {
-            notify_dbl_click(x, y, (Event::Button)event.button.button);
-          }
-
-          last_click[event.button.button] = current_ticks;
-          last_click_x = event.button.x;
-          last_click_y = event.button.y;
-        }
-        break;
-      case SDL_MOUSEBUTTONDOWN:
-        break;
-      case SDL_MOUSEMOTION:
-        for (int button = 1; button <= 3; button++) {
-          if (event.motion.state & SDL_BUTTON(button)) {
-            if (drag_button == 0) {
-              drag_button = button;
-              drag_x = event.motion.x;
-              drag_y = event.motion.y;
-              break;
-            }
-
-            int x = static_cast<int>(static_cast<float>(drag_x) *
-                                     zoom_factor * screen_factor_x);
-            int y = static_cast<int>(static_cast<float>(drag_y) *
-                                     zoom_factor * screen_factor_y);
-            int dx = event.motion.x - drag_x;
-            int dy = event.motion.y - drag_y;
-            if ((dx == 0) && (dy == 0)) {
-                break;
-            }
-
-            notify_drag(x, y, dx, dy, (Event::Button)drag_button);
-
-            SDL_WarpMouseInWindow(nullptr, drag_x, drag_y);
-
-            break;
-          }
-        }
-        break;
-      case SDL_MOUSEWHEEL: {
-        SDL_Keymod mod = SDL_GetModState();
-        if ((mod & KMOD_CTRL) != 0) {
-          zoom(0.2f * static_cast<float>(event.wheel.y));
-        }
-        break;
-      }
-      case SDL_KEYDOWN: {
-        if (event.key.keysym.sym == SDLK_q &&
-            (event.key.keysym.mod & KMOD_CTRL)) {
-          quit();
-          break;
-        }
-
-        unsigned char modifier = 0;
-        if (event.key.keysym.mod & KMOD_CTRL) {
-          modifier |= 1;
-        }
-        if (event.key.keysym.mod & KMOD_SHIFT) {
-          modifier |= 2;
-        }
-        if (event.key.keysym.mod & KMOD_ALT) {
-          modifier |= 4;
-        }
-
-        switch (event.key.keysym.sym) {
-          // Map scroll
-          case SDLK_UP: {
-            notify_drag(0, 0, 0, -32, Event::ButtonLeft);
-            break;
-          }
-          case SDLK_DOWN: {
-            notify_drag(0, 0, 0, 32, Event::ButtonLeft);
-            break;
-          }
-          case SDLK_LEFT: {
-            notify_drag(0, 0, -32, 0, Event::ButtonLeft);
-            break;
-          }
-          case SDLK_RIGHT: {
-            notify_drag(0, 0, 32, 0, Event::ButtonLeft);
-            break;
-          }
-
-          case SDLK_PLUS:
-          case SDLK_KP_PLUS:
-          case SDLK_EQUALS:
-            notify_key_pressed('+', 0);
-            break;
-          case SDLK_MINUS:
-          case SDLK_KP_MINUS:
-            notify_key_pressed('-', 0);
-            break;
-
-          // Video
-          case SDLK_f:
-            if (event.key.keysym.mod & KMOD_CTRL) {
-              gfx.set_fullscreen(!gfx.is_fullscreen());
-            } else {
-                // if this isn't handled the 'f' key
-                // doesn't work for savegame names
-                notify_key_pressed(event.key.keysym.sym, modifier);
-            }
-            break;
-          case SDLK_RIGHTBRACKET:
-            zoom(-0.2f);
-            break;
-          case SDLK_LEFTBRACKET:
-            zoom(0.2f);
-            break;
-
-          // Misc
-          case SDLK_F10:
-            notify_key_pressed('n', 1);
-            break;
-
-          default:
-            notify_key_pressed(event.key.keysym.sym, modifier);
-            break;
-        }
-
-        break;
-      }
-      case SDL_QUIT:
-        notify_key_pressed('c', 1);
-        break;
-      case SDL_WINDOWEVENT:
-        if (SDL_WINDOWEVENT_SIZE_CHANGED == event.window.event) {
-          unsigned int width = event.window.data1;
-          unsigned int height = event.window.data2;
-          gfx.set_resolution(width, height, gfx.is_fullscreen());
-          gfx.get_screen_factor(&screen_factor_x, &screen_factor_y);
-          float factor = (gfx.get_zoom_factor() - 1);
-          zoom(-factor);
-          notify_resize(width, height);
-          zoom(factor);
-        }
-        break;
-      case SDL_USEREVENT:
-        switch (event.user.code) {
-          case EventUserTypeQuit:
-            SDL_RemoveTimer(timer_id);
-            if (screen != nullptr) {
-              delete screen;
-              screen = nullptr;
-            }
-            return;
-          case EventUserTypeCall: {
-            while (!deferred_calls.empty()) {
-              deferred_calls.front()(nullptr);
-              deferred_calls.pop_front();
-            }
-            break;
-          }
-          default:
-            break;
-        }
-        break;
-      default:
-        if (event.type == eventUserTypeStep) {
-          // Update and draw interface
-          notify_update();
-
-          if (screen == nullptr) {
-            screen = gfx.get_screen_frame();
-          }
-          notify_draw(screen);
-
-          // Swap video buffers
-          gfx.swap_buffers();
-
-          SDL_FlushEvent(eventUserTypeStep);
-        }
+  while (running) {
+    Uint64 now = SDL_GetTicks();
+    Sint32 timeout = (now < next_step) ? static_cast<Sint32>(next_step - now)
+                                       : 0;
+    SDL_Event event;
+    bool have_event = SDL_WaitEventTimeout(&event, timeout);
+    while (have_event && running) {
+      running = handle_sdl_event(event);
+      have_event = SDL_PollEvent(&event);
     }
+    if (!running) {
+      break;
+    }
+
+    now = SDL_GetTicks();
+    if (now < next_step) {
+      continue;
+    }
+
+    int steps = 0;
+    while (now >= next_step && steps < kMaxCatchUpSteps) {
+      notify_update();
+      next_step += TICK_LENGTH;
+      steps++;
+    }
+    if (now >= next_step) {
+      next_step = now + TICK_LENGTH;
+    }
+
+    if (screen == nullptr) {
+      screen = gfx.get_screen_frame();
+    }
+    notify_draw(screen);
+    gfx.swap_buffers();
   }
 
-  SDL_RemoveTimer(timer_id);
   if (screen != nullptr) {
     delete screen;
     screen = nullptr;
   }
-#endif
 }
 
+/* One iteration of the event loop for the Emscripten main loop: process
+   the pending events and advance the game in fixed steps of TICK_LENGTH
+   ms, driven by the browser frame. */
+void
+EventLoopSDL::run_iteration() {
+  static const int kMaxCatchUpSteps = 5;
+
+  Graphics &gfx = Graphics::get_instance();
+
+  if (next_step == 0) {
+    gfx.get_screen_factor(&screen_factor_x, &screen_factor_y);
+    next_step = SDL_GetTicks() + TICK_LENGTH;
+    running = true;
+  }
+
+  SDL_Event event;
+  while (running && SDL_PollEvent(&event)) {
+    running = handle_sdl_event(event);
+  }
+  if (!running) {
+    return;
+  }
+
+  Uint64 now = SDL_GetTicks();
+  if (now < next_step) {
+    return;
+  }
+
+  int steps = 0;
+  while (now >= next_step && steps < kMaxCatchUpSteps) {
+    notify_update();
+    next_step += TICK_LENGTH;
+    steps++;
+  }
+  if (now >= next_step) {
+    next_step = now + TICK_LENGTH;
+  }
+
+  if (screen == nullptr) {
+    screen = gfx.get_screen_frame();
+  }
+  notify_draw(screen);
+  gfx.swap_buffers();
+}
+
+/* Zoom levels are screen pixels per map pixel from 1 (no zoom) down to
+   0.2 (5 times), in steps of 0.2. */
 void
 EventLoopSDL::zoom(float delta) {
-  Graphics &gfx = Graphics::get_instance();
-  float factor = gfx.get_zoom_factor();
-  if (gfx.set_zoom_factor(factor + delta)) {
-    zoom_factor = gfx.get_zoom_factor();
-    unsigned int width = 0;
-    unsigned int height = 0;
-    gfx.get_resolution(&width, &height);
-    notify_resize(width, height);
+  float level = std::round((zoom_level + delta) * 10.f) / 10.f;
+  if (level < 0.2f || level > 1.f) {
+    return;
   }
+  zoom_level = level;
+  apply_zoom();
+}
+
+/* The panel and the boxes are magnified up to 2 times by zooming the
+   whole screen; the map view gets the rest of the zoom on its own, so
+   that the panel stays usable. */
+void
+EventLoopSDL::apply_zoom() {
+  Graphics &gfx = Graphics::get_instance();
+  float screen_level = std::max(zoom_level, 0.5f);
+  gfx.set_zoom_factor(screen_level);
+  zoom_factor = gfx.get_zoom_factor();
+  gfx.set_map_zoom(zoom_factor / zoom_level);
+
+  unsigned int width = 0;
+  unsigned int height = 0;
+  gfx.get_resolution(&width, &height);
+  notify_resize(
+    static_cast<unsigned int>(static_cast<float>(width) * zoom_factor),
+    static_cast<unsigned int>(static_cast<float>(height) * zoom_factor));
+}
+
+unsigned int
+EventLoopSDL::get_ticks() {
+  return static_cast<unsigned int>(SDL_GetTicks());
 }
 
 class TimerSDL : public Timer {

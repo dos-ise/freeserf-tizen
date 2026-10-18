@@ -57,10 +57,10 @@ Player::Player(Game* game, unsigned int index)
   , player_stat_history{}
   , resource_count_history{}
   , attacking_knights{} {
-  build = 0;
+  set_build_bits(0);
   color = { 0 };
   face = -1;
-  flags = 0;
+  set_flags_bits(0);
   castle_inventory = 0;
   reproduction_counter = 0;
   reproduction_reset = 0;
@@ -82,6 +82,16 @@ Player::Player(Game* game, unsigned int index)
   temp_index = 0;
 
   building = 0;
+  /* No emergency program. */
+  set_emergency_bits(0);
+  emergency_over = true;
+  emergency_counter = 0;
+  extra_planks = 0;
+  extra_stone = 0;
+  lumberjack_index = 0;
+  sawmill_index = 0;
+  stonecutter_index = 0;
+  ai = PlayerAI();
   cont_search_after_non_optimal_find = 7;
   knights_to_spawn = 0;
   total_land_area = 0;
@@ -129,9 +139,6 @@ Player::Player(Game* game, unsigned int index)
   send_generic_delay = 0;
   serf_index = 0;
 
-  /* player->field_1b0 = 0; AI */
-  /* player->field_1b2 = 0; AI */
-
   castle_score = 0;
 
   for (int i = 0; i < 26; i++) {
@@ -159,9 +166,10 @@ Player::Player(Game* game, unsigned int index)
     serf_count[i] = 0;
   }
 
-  /* TODO AI: Set array field_402 of length 25 to -1. */
-  /* TODO AI: Set array field_434 of length 280*2 to 0 */
-  /* TODO AI: Set array field_1bc of length 8 to -1 */
+  /* Computer player state (Amiga player_init_all @0x5468). */
+  for (int i = 0; i < 25; i++) ai.build_damp[i] = 0xffff;
+  int *pending = &ai.u_1bc;
+  for (int i = 0; i < 16; i++) pending[i] = 0xffff;
 }
 
 // Initialize player values.
@@ -178,7 +186,8 @@ Player::Player(Game* game, unsigned int index)
 void
 Player::init(unsigned int _intelligence, unsigned int _supplies,
              unsigned int _reproduction) {
-  flags = 0;
+  set_flags_bits(0);
+  in_game = true; /* Amiga player_init_all @0x54c4 */
 
   initial_supplies = _supplies;
   reproduction_reset = (60 - _reproduction) * 50;
@@ -191,14 +200,29 @@ Player::init_view(Color _color, unsigned int _face) {
   face = _face;
 
   if (face < 12) { /* AI player */
-    flags |= BIT(7); /* Set AI bit */
-    /* TODO ... */
-    /*game.max_next_index = 49;*/
+    computer = true;
+    /* With an AI player the scheduler cycle is 49 updates
+       (Amiga player_init_all @0x54e2). */
+    game->set_max_next_index(49);
   }
 
   if (is_ai()) init_ai_values(face);
 
   color = _color;
+}
+
+/* Tutorial 6's enemy: without a face, with a castle but not in the game,
+   its military buildings fully occupied (Amiga game_init_start_castles
+   @0x4a78). */
+void
+Player::init_passive(Color _color) {
+  face = 0;
+  color = _color;
+  set_flags_bits(0);
+  castle = true;
+  for (int i = 0; i < 4; i++) {
+    knight_occupation[i] = 0x44;
+  }
 }
 
 /* Initialize AI parameters. */
@@ -226,7 +250,7 @@ Player::init_ai_values(size_t face_) {
 /* Enqueue a new notification message for player. */
 void
 Player::add_notification(Message::Type type, MapPos pos, unsigned int data) {
-  flags |= BIT(3); /* Message in queue. */
+  message = true;
   Message new_message;
   new_message.type = type;
   new_message.pos = pos;
@@ -593,12 +617,69 @@ Player::start_attack() {
   }
 }
 
+int
+Player::get_flags_bits() const {
+  return (castle ? BIT(0) : 0) | (strongest ? BIT(1) : 0) |
+         (knight_cycling ? BIT(2) : 0) | (message ? BIT(3) : 0) |
+         (knight_level_reduced ? BIT(4) : 0) |
+         (knight_cycling_second ? BIT(5) : 0) | (in_game ? BIT(6) : 0) |
+         (computer ? BIT(7) : 0);
+}
+
+void
+Player::set_flags_bits(int bits) {
+  castle = BIT_TEST(bits, 0);
+  strongest = BIT_TEST(bits, 1);
+  knight_cycling = BIT_TEST(bits, 2);
+  message = BIT_TEST(bits, 3);
+  knight_level_reduced = BIT_TEST(bits, 4);
+  knight_cycling_second = BIT_TEST(bits, 5);
+  in_game = BIT_TEST(bits, 6);
+  computer = BIT_TEST(bits, 7);
+}
+
+int
+Player::get_build_bits() const {
+  return (no_military ? BIT(0) : 0) | (no_flag ? BIT(1) : 0) |
+         (serfs_spawning ? BIT(2) : 0) | (castle_standing ? BIT(3) : 0) |
+         (water_roads ? BIT(4) : 0);
+}
+
+void
+Player::set_build_bits(int bits) {
+  no_military = BIT_TEST(bits, 0);
+  no_flag = BIT_TEST(bits, 1);
+  serfs_spawning = BIT_TEST(bits, 2);
+  castle_standing = BIT_TEST(bits, 3);
+  water_roads = BIT_TEST(bits, 4);
+}
+
+int
+Player::get_emergency_bits() const {
+  return (emergency_over ? BIT(0) : 0) | (out_of_planks ? BIT(1) : 0) |
+         (out_of_stone ? BIT(2) : 0) | (emergency_lumberjack ? BIT(3) : 0) |
+         (emergency_sawmill ? BIT(4) : 0) | (emergency_stone ? BIT(5) : 0) |
+         (emergency_active ? BIT(6) : 0);
+}
+
+void
+Player::set_emergency_bits(int bits) {
+  emergency_over = BIT_TEST(bits, 0);
+  out_of_planks = BIT_TEST(bits, 1);
+  out_of_stone = BIT_TEST(bits, 2);
+  emergency_lumberjack = BIT_TEST(bits, 3);
+  emergency_sawmill = BIT_TEST(bits, 4);
+  emergency_stone = BIT_TEST(bits, 5);
+  emergency_active = BIT_TEST(bits, 6);
+}
+
 /* Begin cycling knights by sending knights from military buildings
    to inventories. The knights can then be replaced by more experienced
    knights. */
 void
 Player::cycle_knights() {
-  flags |= BIT(2) | BIT(4);
+  knight_cycling = true;
+  knight_level_reduced = true;
   knight_cycle_counter = 2400;
 }
 
@@ -613,12 +694,22 @@ Player::decrease_castle_knights_wanted() {
 }
 
 void
+Player::restore_castle(Building *castle) {
+  if (building == 0) {
+    building = castle->get_index();
+    if (castle->get_inventory() != nullptr) {
+      castle_inventory = castle->get_inventory()->get_index();
+    }
+  }
+}
+
+void
 Player::building_founded(Building *building_) {
   building_->set_owner(index);
 
   if (building_->get_type() == Building::TypeCastle) {
-    flags |= BIT(0); /* Has castle */
-    build |= BIT(3);
+    castle = true;
+    castle_standing = true;
     total_building_score += building_get_score_from_type(Building::TypeCastle);
     castle_inventory = building_->get_inventory()->get_index();
     building = building_->get_index();
@@ -677,7 +768,7 @@ Player::building_demolished(Building *building_) {
     if (building_->get_type() != Building::TypeCastle) {
       completed_building_count[building_->get_type()] -= 1;
     } else {
-      build &= ~BIT(3);
+      castle_standing = false;
       castle_score -= 1;
     }
   } else {
@@ -788,7 +879,7 @@ Player::decrease_serf_count(Serf::Type type) {
 /* Create the initial serfs that occupies the castle. */
 void
 Player::create_initial_castle_serfs(Building *castle) {
-  build |= BIT(2);
+  serfs_spawning = true;
 
   /* Spawn serf 4 */
   Inventory *inventory = castle->get_inventory();
@@ -866,6 +957,158 @@ Player::create_initial_castle_serfs(Building *castle) {
   }
 }
 
+/* The castle keeps a reserve of planks and stone back (Amiga
+   game_build_castle @0x155de). */
+void
+Player::start_emergency_program(unsigned int planks, unsigned int stone) {
+  extra_planks = planks;
+  extra_stone = stone;
+  emergency_over = false;
+  out_of_planks = false;
+  out_of_stone = false;
+  emergency_lumberjack = false;
+  emergency_sawmill = false;
+  emergency_stone = false;
+  emergency_counter = 0;
+  lumberjack_index = 0;
+  sawmill_index = 0;
+  stonecutter_index = 0;
+}
+
+/* Until the program is over the first lumberjack, sawmill and stonecutter
+   are designated (Amiga game_build_building @0x18752). */
+void
+Player::designate_emergency_building(const Building *bld) {
+  if (emergency_over) {
+    return;
+  }
+
+  switch (bld->get_type()) {
+    case Building::TypeLumberjack:
+      if (lumberjack_index == 0) lumberjack_index = bld->get_index();
+      break;
+    case Building::TypeSawmill:
+      if (sawmill_index == 0) sawmill_index = bld->get_index();
+      break;
+    case Building::TypeStonecutter:
+      if (stonecutter_index == 0) stonecutter_index = bld->get_index();
+      break;
+    default:
+      break;
+  }
+}
+
+/* A deleted building is no longer designated (the original keeps
+   reading the stale record). */
+void
+Player::building_deleted(unsigned int index) {
+  if (lumberjack_index == index) lumberjack_index = 0;
+  if (sawmill_index == index) sawmill_index = 0;
+  if (stonecutter_index == index) stonecutter_index = 0;
+}
+
+/* A designated building counts as ready when it is finished or has all
+   its construction material (Amiga @0xb31a). */
+static bool
+emergency_building_ready(Game *game, unsigned int index) {
+  Building *building = game->get_building(index);
+  if (building == nullptr) return true;
+  if (building->is_done()) return true;
+  return building->get_res_count_in_stock(0) +
+         building->get_res_count_in_stock(1) ==
+         static_cast<unsigned int>(building->get_maximum_in_stock(0) +
+                                   building->get_maximum_in_stock(1));
+}
+
+/* Emergency program: when the castle runs out of planks or stone, only
+   the designated lumberjack, sawmill and stonecutter are built, until
+   they are ready (Amiga player_update_emergency_program @0xb23c). */
+void
+Player::update_emergency_program() {
+  if (!is_in_game() || emergency_over || !has_castle()) {
+    return;
+  }
+  Inventory *inventory = game->get_inventory(castle_inventory);
+  /* After the castle is lost the original keeps reading its freed
+     inventory record. */
+  if (inventory == nullptr || inventory->get_owner() != index) {
+    return;
+  }
+
+  if (!out_of_planks &&
+      inventory->get_count_of(Resource::TypePlank) == 0) {
+    out_of_planks = true;
+    if (!out_of_stone) {
+      emergency_active = true;
+      add_notification(Message::TypeEmergencyActive, 0, 0);
+    }
+    emergency_counter = 2;
+  }
+
+  if (!out_of_stone &&
+      inventory->get_count_of(Resource::TypeStone) == 0) {
+    out_of_stone = true;
+    if (!out_of_planks) {
+      emergency_active = true;
+      add_notification(Message::TypeEmergencyActive, 0, 0);
+    }
+    emergency_counter = 2;
+  }
+
+  /* After two cycles the reserve of the missing material is released. */
+  if (emergency_counter != 0) {
+    emergency_counter -= 1;
+    if (emergency_counter == 0) {
+      if (out_of_planks && extra_planks != 0) {
+        inventory->set_count_of(Resource::TypePlank,
+                                inventory->get_count_of(Resource::TypePlank) +
+                                extra_planks);
+        extra_planks = 0;
+      }
+      if (out_of_stone && extra_stone != 0) {
+        inventory->set_count_of(Resource::TypeStone,
+                                inventory->get_count_of(Resource::TypeStone) +
+                                extra_stone);
+        extra_stone = 0;
+      }
+    }
+  }
+
+  if (!emergency_lumberjack && lumberjack_index != 0 &&
+      emergency_building_ready(game, lumberjack_index)) {
+    emergency_lumberjack = true;
+    lumberjack_index = 0;
+  }
+  if (!emergency_sawmill && sawmill_index != 0 &&
+      emergency_building_ready(game, sawmill_index)) {
+    emergency_sawmill = true;
+    sawmill_index = 0;
+  }
+  if (!emergency_stone && stonecutter_index != 0 &&
+      emergency_building_ready(game, stonecutter_index)) {
+    emergency_stone = true;
+    stonecutter_index = 0;
+  }
+
+  if (emergency_lumberjack && emergency_sawmill && emergency_stone) {
+    emergency_over = true;
+    if (out_of_planks || out_of_stone) {
+      emergency_active = false;
+      add_notification(Message::TypeEmergencyNeutral, 0, 0);
+    }
+    out_of_planks = false;
+    out_of_stone = false;
+    inventory->set_count_of(Resource::TypePlank,
+                            inventory->get_count_of(Resource::TypePlank) +
+                            extra_planks);
+    extra_planks = 0;
+    inventory->set_count_of(Resource::TypeStone,
+                            inventory->get_count_of(Resource::TypeStone) +
+                            extra_stone);
+    extra_stone = 0;
+  }
+}
+
 /* Update player game state as part of the game progression. */
 void
 Player::update() {
@@ -876,19 +1119,21 @@ Player::update() {
   if (total_military_score > 0xffff0000) total_military_score = 0;
   if (total_building_score > 0xffff0000) total_building_score = 0;
 
+  if (!is_in_game()) return;
+
   if (is_ai()) {
-    /*if (player->field_1B2 != 0) player->field_1B2 -= 1;*/
-    /*if (player->field_1B0 != 0) player->field_1B0 -= 1;*/
+    if (ai.u_1b2 != 0) ai.u_1b2 -= 1;
+    if (ai.u_1b0 != 0) ai.u_1b0 -= 1;
   }
 
   if (cycling_knight()) {
     knight_cycle_counter -= delta;
     if (knight_cycle_counter < 1) {
-      flags &= ~BIT(5);
-      flags &= ~BIT(2);
+      knight_cycling_second = false;
+      knight_cycling = false;
     } else if (knight_cycle_counter < 2048 && reduced_knight_level()) {
-      flags |= BIT(5);
-      flags &= ~BIT(4);
+      knight_cycling_second = true;
+      knight_level_reduced = false;
     }
   }
 
@@ -982,32 +1227,10 @@ Player::update_knight_morale() {
     knight_morale = std::min(knight_morale + 1024 * castle_score, 0xffff);
   }
 
-  unsigned int military_score = total_military_score;
-  unsigned int morale = knight_morale >> 5;
-  while (military_score > 0xffff) {
-    military_score >>= 1;
-    morale <<= 1;
-  }
+  /* Military strength against the other players, used by the AI (Amiga
+     player_update_knight_morale @0xb4bc). */
+  ai.military_ratio = AI::calc_military_ratio(game, this);
 
-  /* Calculate fractional score used by AI */
-  unsigned int player_score = (military_score * morale) >> 7;
-  unsigned int enemy_score = game->get_enemy_score(this);
-
-  while (player_score > 0xffff && enemy_score > 0xffff) {
-    player_score >>= 1;
-    enemy_score >>= 1;
-  }
-/*
-  player_score >>= 1;
-  unsigned int frac_score = 0;
-  if (player_score != 0 && enemy_score != 0) {
-    if (player_score > enemy_score) {
-      frac_score = 0xffffffff;
-    } else {
-      frac_score = (player_score * 0x10000) / enemy_score;
-    }
-  }
-*/
   military_max_gold = 0;
 }
 
@@ -1136,9 +1359,9 @@ operator >> (SaveReaderBinary &reader, Player &player)  {
   player.index = v16;
   player.color = default_player_colors[player.index];
   reader >> v8;  // 130
-  player.flags = v8;
+  player.set_flags_bits(v8);
   reader >> v8;  // 131
-  player.build = v8;
+  player.set_build_bits(v8);
 
   for (int j = 0; j < 23; j++) {
     reader >> v16;  // 132
@@ -1268,13 +1491,30 @@ operator >> (SaveReaderBinary &reader, Player &player)  {
 
 SaveReaderText&
 operator >> (SaveReaderText &reader, Player &player) {
-  reader.value("flags") >> player.flags;
-  reader.value("build") >> player.build;
+  int bits = 0;
+  reader.value("flags") >> bits;
+  player.set_flags_bits(bits);
+  reader.value("build") >> bits;
+  player.set_build_bits(bits);
   unsigned int val;
   reader.value("color")[0] >> val; player.color.red = val;
   reader.value("color")[1] >> val; player.color.green = val;
   reader.value("color")[2] >> val; player.color.blue = val;
   reader.value("face") >> player.face;
+  /* Older saves have no emergency program; it counts as over. */
+  if (reader.has_value("emergency_flags")) {
+    reader.value("emergency_flags") >> bits;
+    player.set_emergency_bits(bits);
+    reader.value("emergency_counter") >> player.emergency_counter;
+    reader.value("extra_planks") >> player.extra_planks;
+    reader.value("extra_stone") >> player.extra_stone;
+    reader.value("lumberjack_index") >> player.lumberjack_index;
+    reader.value("sawmill_index") >> player.sawmill_index;
+    reader.value("stonecutter_index") >> player.stonecutter_index;
+  }
+  /* Saves from before the in-game bit: every player with a face takes
+     part in the game. */
+  if (player.face != 0) player.in_game = true;
   for (int i = 0; i < 9; i++) {
     reader.value("tool_prio")[i] >> player.tool_prio[i];
   }
@@ -1289,11 +1529,14 @@ operator >> (SaveReaderText &reader, Player &player) {
     reader.value("knight_occupation")[i] >> player.knight_occupation[i];
     reader.value("attacking_knights")[i] >> player.attacking_knights[i];
   }
-  for (int i = 0; i < 23; i++) {
-    reader.value("completed_building_count")[i] >>
-      player.completed_building_count[i];
-    reader.value("incomplete_building_count")[i] >>
-      player.incomplete_building_count[i];
+  /* All 24 types; older saves have 23 of them, without the gold
+     smelters. */
+  SaveReaderTextValue completed = reader.value("completed_building_count");
+  SaveReaderTextValue incomplete = reader.value("incomplete_building_count");
+  for (size_t i = 0; i < 24 && i < completed.size() && i < incomplete.size();
+       i++) {
+    completed[i] >> player.completed_building_count[i];
+    incomplete[i] >> player.incomplete_building_count[i];
   }
   for (int i = 0; i < 64; i++) {
     reader.value("attacking_buildings")[i] >> player.attacking_buildings[i];
@@ -1329,17 +1572,103 @@ operator >> (SaveReaderText &reader, Player &player) {
   reader.value("castle_knights") >> player.castle_knights;
   reader.value("castle_knights_wanted") >> player.castle_knights_wanted;
 
+  /* Computer player state (all ints, see ai.h). */
+  if (reader.has_value("ai")) {
+    reader.value("knight_cycle_counter") >> player.knight_cycle_counter;
+    reader.value("ai_intelligence") >> player.ai_intelligence;
+    reader.value("ai_values")[0] >> player.ai_value_0;
+    reader.value("ai_values")[1] >> player.ai_value_1;
+    reader.value("ai_values")[2] >> player.ai_value_2;
+    reader.value("ai_values")[3] >> player.ai_value_3;
+    reader.value("ai_values")[4] >> player.ai_value_4;
+    reader.value("ai_values")[5] >> player.ai_value_5;
+    int *ai = reinterpret_cast<int *>(&player.ai);
+    for (size_t i = 0; i < sizeof(player.ai) / sizeof(int); i++) {
+      reader.value("ai")[i] >> ai[i];
+    }
+  } else if (player.is_ai()) {
+    /* Older saves have no computer player state: the AI starts with the
+       values of its face and the highest intelligence, past the castle
+       placement if the castle stands. */
+    player.init_ai_values(player.face);
+    player.ai_intelligence = (1300 * 40) + 13535;
+    if (player.has_castle()) {
+      player.ai.phase = 2;
+      player.ai.counter = 0xffff;
+    }
+  }
+
+  /* Older saves did not keep these. The castle is found again after
+     the buildings (Game). */
+  if (reader.has_value("castle")) {
+    reader.value("castle") >> player.building;
+    reader.value("castle_inventory") >> player.castle_inventory;
+  }
+  if (reader.has_value("cont_search_after_non_optimal_find")) {
+    reader.value("cont_search_after_non_optimal_find") >>
+      player.cont_search_after_non_optimal_find;
+    reader.value("send_generic_delay") >> player.send_generic_delay;
+    reader.value("send_knight_delay") >> player.send_knight_delay;
+    reader.value("knight_morale") >> player.knight_morale;
+    reader.value("gold_deposited") >> player.gold_deposited;
+    reader.value("military_max_gold") >> player.military_max_gold;
+  }
+  if (reader.has_value("timers")) {
+    SaveReaderTextValue timers = reader.value("timers");
+    for (size_t i = 0; i + 1 < timers.size(); i += 2) {
+      PosTimer timer;
+      timers[i] >> timer.timeout;
+      timers[i + 1] >> timer.pos;
+      player.timers.push_back(timer);
+    }
+  }
+  if (reader.has_value("messages")) {
+    SaveReaderTextValue messages = reader.value("messages");
+    for (size_t i = 0; i + 2 < messages.size(); i += 3) {
+      Message message;
+      int type = 0;
+      messages[i] >> type;
+      message.type = static_cast<Message::Type>(type);
+      messages[i + 1] >> message.pos;
+      messages[i + 2] >> message.data;
+      player.messages.push(message);
+    }
+  }
+  if (reader.has_value("player_stat_history")) {
+    SaveReaderTextValue history = reader.value("player_stat_history");
+    for (int mode = 0; mode < 16; mode++) {
+      for (int i = 0; i < 112; i++) {
+        history[mode * 112 + i] >> player.player_stat_history[mode][i];
+      }
+    }
+  }
+  if (reader.has_value("resource_count_history")) {
+    SaveReaderTextValue history = reader.value("resource_count_history");
+    for (int res = 0; res < 26; res++) {
+      for (int i = 0; i < 120; i++) {
+        history[res * 120 + i] >> player.resource_count_history[res][i];
+      }
+    }
+  }
+
   return reader;
 }
 
 SaveWriterText&
 operator << (SaveWriterText &writer, Player &player) {
-  writer.value("flags") << player.flags;
-  writer.value("build") << player.build;
+  writer.value("flags") << player.get_flags_bits();
+  writer.value("build") << player.get_build_bits();
   writer.value("color") << player.color.red;
   writer.value("color") << player.color.green;
   writer.value("color") << player.color.blue;
   writer.value("face") << player.face;
+  writer.value("emergency_flags") << player.get_emergency_bits();
+  writer.value("emergency_counter") << player.emergency_counter;
+  writer.value("extra_planks") << player.extra_planks;
+  writer.value("extra_stone") << player.extra_stone;
+  writer.value("lumberjack_index") << player.lumberjack_index;
+  writer.value("sawmill_index") << player.sawmill_index;
+  writer.value("stonecutter_index") << player.stonecutter_index;
 
   for (int i = 0; i < 9; i++) {
     writer.value("tool_prio") << player.tool_prio[i];
@@ -1358,7 +1687,7 @@ operator << (SaveWriterText &writer, Player &player) {
     writer.value("attacking_knights") << player.attacking_knights[i];
   }
 
-  for (int i = 0; i < 23; i++) {
+  for (int i = 0; i < 24; i++) {
     writer.value("completed_building_count") <<
       player.completed_building_count[i];
     writer.value("incomplete_building_count") <<
@@ -1410,6 +1739,56 @@ operator << (SaveWriterText &writer, Player &player) {
 
   writer.value("castle_knights") << player.castle_knights;
   writer.value("castle_knights_wanted") << player.castle_knights_wanted;
+
+  writer.value("knight_cycle_counter") << player.knight_cycle_counter;
+  writer.value("ai_intelligence") << player.ai_intelligence;
+  writer.value("ai_values") << player.ai_value_0;
+  writer.value("ai_values") << player.ai_value_1;
+  writer.value("ai_values") << player.ai_value_2;
+  writer.value("ai_values") << player.ai_value_3;
+  writer.value("ai_values") << player.ai_value_4;
+  writer.value("ai_values") << player.ai_value_5;
+  const int *ai = reinterpret_cast<const int *>(&player.ai);
+  for (size_t i = 0; i < sizeof(player.ai) / sizeof(int); i++) {
+    writer.value("ai") << ai[i];
+  }
+
+  writer.value("castle") << player.building;
+  writer.value("castle_inventory") << player.castle_inventory;
+  writer.value("cont_search_after_non_optimal_find") <<
+    player.cont_search_after_non_optimal_find;
+  writer.value("send_generic_delay") << player.send_generic_delay;
+  writer.value("send_knight_delay") << player.send_knight_delay;
+  writer.value("knight_morale") << player.knight_morale;
+  writer.value("gold_deposited") << player.gold_deposited;
+  writer.value("military_max_gold") << player.military_max_gold;
+
+  /* The timers and messages of the player, as pairs or triples. */
+  for (const PosTimer &timer : player.timers) {
+    writer.value("timers") << timer.timeout;
+    writer.value("timers") << timer.pos;
+  }
+  Messages messages = player.messages;
+  while (!messages.empty()) {
+    const Message &message = messages.front();
+    writer.value("messages") << static_cast<int>(message.type);
+    writer.value("messages") << message.pos;
+    writer.value("messages") << message.data;
+    messages.pop();
+  }
+
+  for (int mode = 0; mode < 16; mode++) {
+    for (int i = 0; i < 112; i++) {
+      writer.value("player_stat_history") <<
+        player.player_stat_history[mode][i];
+    }
+  }
+  for (int res = 0; res < 26; res++) {
+    for (int i = 0; i < 120; i++) {
+      writer.value("resource_count_history") <<
+        player.resource_count_history[res][i];
+    }
+  }
 
   return writer;
 }

@@ -35,6 +35,8 @@ class Event {
     TypeResize,
     TypeUpdate,
     TypeDraw,
+    /* The pictures kept by the GUI objects were lost. */
+    TypeInvalidate,
   } Type;
 
   typedef enum Button {
@@ -104,6 +106,8 @@ class EventLoop {
   virtual void run_iteration() = 0;  // NEW: For Emscripten main loop
   virtual void quit() = 0;
   virtual void deferred_call(DeferredCall call, void *data) = 0;
+  /* Milliseconds since the start. */
+  virtual unsigned int get_ticks() = 0;
 
   void add_handler(Handler *handler);
   void del_handler(Handler *handler);
@@ -118,6 +122,7 @@ class EventLoop {
   bool notify_drag(int x, int y, int dx, int dy, Event::Button button);
   bool notify_key_pressed(unsigned char key, unsigned char morifier);
   bool notify_resize(unsigned int width, unsigned int height);
+  bool notify_invalidate();
   bool notify_update();
   bool notify_draw(Frame *frame);
 };

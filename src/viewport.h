@@ -50,17 +50,28 @@ class Viewport : public GuiObject, public Map::Handler {
   } Layer;
 
  protected:
-  /* Cache prerendered tiles of the landscape. */
-  typedef std::map<unsigned int, std::unique_ptr<Frame>> TilesMap;
+  /* Cache prerendered tiles of the landscape. Only the recently used
+     ones are kept: all tiles of a large map take more than a gigabyte. */
+  typedef struct LandscapeTile {
+    std::unique_ptr<Frame> frame;
+    unsigned int last_use;
+  } LandscapeTile;
+  typedef std::map<unsigned int, LandscapeTile> TilesMap;
   TilesMap landscape_tiles;
+  unsigned int tile_use_counter;
 
   int offset_x, offset_y;
+  int last_width, last_height;
   unsigned int layers;
   Interface *interface;
   unsigned int last_tick;
   Data::PSource data_source;
 
   PMap map;
+
+  /* Water and trees seen by the last draw, for the ambient sounds. */
+  int water_in_view;
+  int trees_in_view;
 
  public:
   Viewport(Interface *interface, PMap map);
@@ -80,6 +91,9 @@ class Viewport : public GuiObject, public Map::Handler {
   void redraw_map_pos(MapPos pos);
 
   void update();
+
+  int get_water_in_view() const { return water_in_view; }
+  int get_trees_in_view() const { return trees_in_view; }
 
  protected:
   void draw_triangle_up(int x, int y, int m, int left, int right, MapPos pos,
@@ -126,6 +140,11 @@ class Viewport : public GuiObject, public Map::Handler {
 
   virtual void internal_draw();
   virtual void layout();
+
+ public:
+  virtual void invalidate();
+
+ protected:
   virtual bool handle_click_left(int x, int y);
   virtual bool handle_click_right(int x, int y);
   virtual bool handle_dbl_click(int x, int y, Event::Button button);
@@ -134,6 +153,7 @@ class Viewport : public GuiObject, public Map::Handler {
   virtual bool handle_drag(int x, int y);
 
   Frame *get_tile_frame(unsigned int tid, int tc, int tr);
+  void trim_tile_cache(unsigned int tiles_in_view);
 
  public:
   virtual void on_height_changed(MapPos pos);

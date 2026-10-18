@@ -266,6 +266,19 @@ Viewport::draw_down_tile_col(MapPos pos, int x_base, int y_base,
 
 void
 Viewport::layout() {
+  /* Keep the map position in the middle of the view when the size
+     changes (window resize, zoom). */
+  if (last_width != 0 && last_height != 0) {
+    move_by_pixels((last_width - width) / 2, (last_height - height) / 2);
+  }
+  last_width = width;
+  last_height = height;
+  landscape_tiles.clear();
+}
+
+void
+Viewport::invalidate() {
+  GuiObject::invalidate();
   landscape_tiles.clear();
 }
 
@@ -294,7 +307,8 @@ Frame *
 Viewport::get_tile_frame(unsigned int tid, int tc, int tr) {
   TilesMap::iterator it = landscape_tiles.find(tid);
   if (it != landscape_tiles.end()) {
-    return it->second.get();
+    it->second.last_use = tile_use_counter;
+    return it->second.frame.get();
   }
 
   int tile_width = MAP_TILE_COLS*MAP_TILE_WIDTH;
@@ -332,9 +346,28 @@ Viewport::get_tile_frame(unsigned int tid, int tc, int tr) {
                            << ", tc,tr: " << tc << "," << tr << ", tw,th: "
                            << tile_width << "," << tile_height;
 
-  landscape_tiles[tid] = std::move(tile_frame);
+  LandscapeTile &tile = landscape_tiles[tid];
+  tile.frame = std::move(tile_frame);
+  tile.last_use = tile_use_counter;
 
-  return landscape_tiles[tid].get();
+  return tile.frame.get();
+}
+
+/* Keep the tiles in view and those used most recently: up to three times
+   the tiles in view, at least kMinCachedTiles (20 MB each 32 tiles). */
+void
+Viewport::trim_tile_cache(unsigned int tiles_in_view) {
+  static const unsigned int kMinCachedTiles = 64;
+  size_t limit = std::max(kMinCachedTiles, 3 * tiles_in_view);
+  while (landscape_tiles.size() > limit) {
+    TilesMap::iterator oldest = landscape_tiles.begin();
+    for (TilesMap::iterator it = landscape_tiles.begin();
+         it != landscape_tiles.end(); ++it) {
+      if (it->second.last_use < oldest->second.last_use) oldest = it;
+    }
+    if (oldest->second.last_use == tile_use_counter) break;
+    landscape_tiles.erase(oldest);
+  }
 }
 
 void
@@ -347,6 +380,9 @@ Viewport::draw_landscape() {
 
   int map_width = map->get_cols()*MAP_TILE_WIDTH;
   int map_height = map->get_rows()*MAP_TILE_HEIGHT;
+
+  tile_use_counter++;
+  unsigned int tiles_in_view = 0;
 
   int my = offset_y;
   int ly = 0;
@@ -369,6 +405,7 @@ Viewport::draw_landscape() {
       int tid = tc + horiz_tiles*tr;
 
       Frame *tile_frame = get_tile_frame(tid, tc, tr);
+      tiles_in_view++;
 
       int w = tile_width - tx;
       if (lx+w > width) {
@@ -387,6 +424,8 @@ Viewport::draw_landscape() {
     ly += tile_height - ty;
     my += tile_height - ty;
   }
+
+  trim_tile_cache(tiles_in_view);
 }
 
 
@@ -1179,7 +1218,7 @@ Viewport::draw_water_waves_row(MapPos pos, int y_base, int cols,
        pos = map->move_right(pos)) {
     if (map->type_up(pos) <= Map::TerrainWater3 ||
         map->type_down(pos) <= Map::TerrainWater3) {
-      /*player->water_in_view += 1;*/
+      water_in_view += 1;
       draw_water_waves(pos, x_base, y_base);
     }
   }
@@ -1236,7 +1275,7 @@ Viewport::draw_map_objects_row(MapPos pos, int y_base, int cols, int x_base) {
       int sprite = map->get_obj(pos) - Map::ObjectTree0;
       if (sprite < 24) {
         /* Trees */
-        /*player->trees_in_view += 1;*/
+        trees_in_view += 1;
 
         /* Adding sprite number to animation ensures
            that the tree animation won't be synchronized
@@ -2060,8 +2099,8 @@ Viewport::draw_serf_row_behind(MapPos pos, int y_base, int cols, int x_base) {
 
 void
 Viewport::draw_game_objects(int layers_) {
-  /*player->water_in_view = 0;
-  player->trees_in_view = 0;*/
+  water_in_view = 0;
+  trees_in_view = 0;
 
   int draw_landscape = layers_ & LayerLandscape;
   int draw_objects = layers_ & LayerObjects;
@@ -2476,7 +2515,12 @@ Viewport::open_object_box(MapPos clk_pos) {
         interface->open_popup(PopupBox::TypeCastleRes);
       } else if (building->get_type() == Building::TypeStock) {
         if (!building->is_active()) return 0;
-        interface->open_popup(PopupBox::TypeCastleRes);
+        if (interface->get_stock_box_occupied() && !building->has_serf()) {
+          /* Advanced option: no inventory before the serf arrives. */
+          interface->open_popup(PopupBox::TypeBldStock);
+        } else {
+          interface->open_popup(PopupBox::TypeCastleRes);
+        }
       } else if (building->get_type() == Building::TypeHut ||
                  building->get_type() == Building::TypeTower ||
                  building->get_type() == Building::TypeFortress) {
@@ -2547,6 +2591,9 @@ Viewport::open_object_box(MapPos clk_pos) {
 
 bool
 Viewport::handle_drag(int lx, int ly) {
+  if (interface->get_invert_scrolling()) {
+    ly = -ly;
+  }
   if (lx != 0 || ly != 0) {
     move_by_pixels(lx, ly);
   }
@@ -2562,8 +2609,13 @@ Viewport::Viewport(Interface *_interface, PMap _map)
 
   offset_x = 0;
   offset_y = 0;
+  last_width = 0;
+  last_height = 0;
+  tile_use_counter = 0;
 
   last_tick = 0;
+  water_in_view = 0;
+  trees_in_view = 0;
 
   data_source = Data::get_instance().get_data_source();
 }

@@ -31,12 +31,14 @@
 #include "src/interface.h"
 #include "src/version.h"
 #include "src/text-input.h"
+#include "src/box-frame.h"
 #include "src/minimap.h"
 #include "src/map-generator.h"
 #include "src/map-geometry.h"
 #include "src/list.h"
 #include "src/game-manager.h"
 #include "src/popup.h"
+#include "src/translation.h"
 
 class RandomInput : public TextInput {
  protected:
@@ -71,6 +73,23 @@ class RandomInput : public TextInput {
     return true;
   }
 
+  /* The 16 digits in 4 rows of 4, each centred in its cell of 8 pixels,
+     as with the 8 pixels wide digits of the original font. */
+  virtual void internal_draw() {
+    frame->fill_rect(0, 0, width, height, color_background);
+    if (draw_focus && focused) {
+      frame->draw_rect(0, 0, width, height, color_focus);
+    }
+    int origin = draw_focus ? 1 : 0;
+    for (size_t i = 0; i < text.length() && i < 16; i++) {
+      std::string digit = text.substr(i, 1);
+      int cx = origin + 8 * static_cast<int>(i % 4) +
+               (8 - frame->get_string_width(digit)) / 2;
+      int cy = origin + 8 * static_cast<int>(i / 4);
+      frame->draw_string(cx, cy, digit, color_text);
+    }
+  }
+
   virtual bool handle_click_left(int cx, int cy) {
     TextInput::handle_click_left(cx, cy);
     saved_text = text;
@@ -96,6 +115,7 @@ GameInitBox::GameInitBox(Interface *interface)
 
   game_type = GameCustom;
   game_mission = 0;
+  game_tutorial = 0;
 
   set_size(360, 254);
 
@@ -167,6 +187,7 @@ GameInitBox::get_player_face_sprite(size_t face) {
 void
 GameInitBox::internal_draw() {
   draw_background();
+  draw_box_frame(frame, width, height);
 
   const int layout[] = {
     266, 0, 0,    // Start button
@@ -188,8 +209,23 @@ GameInitBox::internal_draw() {
       std::stringstream level;
       level << (game_mission+1);
 
-      draw_box_string(10, 2, "Start mission");
-      draw_box_string(10, 18, "Mission:");
+      draw_box_string(10, 2, _("Start mission"));
+      draw_box_string(10, 18, _("Mission:"));
+      draw_box_string(20, 18, level.str());
+
+      draw_box_icon(33, 0, 237);  // Up button
+      draw_box_icon(33, 16, 240);  // Down button
+
+      break;
+    }
+    case GameTutorial: {
+      draw_box_icon(5, 0, 261);  // Game type
+
+      std::stringstream level;
+      level << (game_tutorial+1);
+
+      draw_box_string(10, 2, _("Start tutorial"));
+      draw_box_string(10, 18, _("Tutorial:"));
       draw_box_string(20, 18, level.str());
 
       draw_box_icon(33, 0, 237);  // Up button
@@ -203,8 +239,8 @@ GameInitBox::internal_draw() {
       std::stringstream str_map_size;
       str_map_size << mission->get_map_size();
 
-      draw_box_string(10, 2, "New game");
-      draw_box_string(10, 18, "Mapsize:");
+      draw_box_string(10, 2, _("New game"));
+      draw_box_string(10, 18, _("Mapsize:"));
       draw_box_string(18, 18, str_map_size.str());
 
       draw_box_icon(25, 0, 265);
@@ -214,7 +250,7 @@ GameInitBox::internal_draw() {
     case GameLoad: {
       draw_box_icon(5, 0, 316);  // Game type
 
-      draw_box_string(10, 2, "Load game");
+      draw_box_string(10, 2, _("Load game"));
 
       break;
     }
@@ -305,8 +341,14 @@ GameInitBox::handle_action(int action) {
         }
       }
 
-      interface->close_game_init();
-      break;
+      /* Closing deletes this box. */
+      Interface *iface = interface;
+      bool tutorial = (game_type == GameTutorial);
+      iface->close_game_init();
+      if (tutorial) {
+        iface->open_popup(PopupBox::TypeTutorialOrders);
+      }
+      return;
     }
     case ActionToggleGameType:
       game_type++;
@@ -316,6 +358,13 @@ GameInitBox::handle_action(int action) {
       switch (game_type) {
         case GameMission: {
           mission = GameInfo::get_mission(game_mission);
+          random_input->set_displayed(false);
+          file_list->set_displayed(false);
+          generate_map_preview();
+          break;
+        }
+        case GameTutorial: {
+          mission = GameInfo::get_tutorial(game_tutorial);
           random_input->set_displayed(false);
           file_list->set_displayed(false);
           generate_map_preview();
@@ -349,6 +398,11 @@ GameInitBox::handle_action(int action) {
                              static_cast<int>(GameInfo::get_mission_count())-1);
           mission = GameInfo::get_mission(game_mission);
           break;
+        case GameTutorial:
+          game_tutorial = std::min(game_tutorial+1,
+                            static_cast<int>(GameInfo::get_tutorial_count())-1);
+          mission = GameInfo::get_tutorial(game_tutorial);
+          break;
         case GameCustom:
           custom_mission->set_map_size(std::min(10u,
                                            custom_mission->get_map_size() + 1));
@@ -361,6 +415,10 @@ GameInitBox::handle_action(int action) {
         case GameMission:
           game_mission = std::max(0, game_mission-1);
           mission = GameInfo::get_mission(game_mission);
+          break;
+        case GameTutorial:
+          game_tutorial = std::max(0, game_tutorial-1);
+          mission = GameInfo::get_tutorial(game_tutorial);
           break;
         case GameCustom:
           custom_mission->set_map_size(std::max(3u,
@@ -426,6 +484,7 @@ GameInitBox::handle_click_left(int cx, int cy) {
   const int *clickmap = nullptr;
   switch (game_type) {
     case GameMission:
+    case GameTutorial:
       clickmap = clickmap_mission;
       break;
     case GameCustom:
@@ -551,7 +610,7 @@ GameInitBox::handle_player_click(unsigned int player_index, int cx, int cy) {
 void
 GameInitBox::generate_map_preview() {
   map.reset(new Map(MapGeometry(mission->get_map_size())));
-  if (game_type == GameMission) {
+  if (game_type == GameMission || game_type == GameTutorial) {
     ClassicMissionMapGenerator generator(*map, mission->get_random_base());
     generator.init();
     generator.generate();

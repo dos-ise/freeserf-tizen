@@ -1,7 +1,9 @@
-cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
+﻿cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
 
 option(ENABLE_SDL2_MIXER "Enable audio support using SDL2_mixer" ON)
 option(ENABLE_SDL2_IMAGE "Enable image loading using SDL2_image" ON)
+option(ENABLE_SDL2_TTF "Enable the TrueType font of the texts using SDL2_ttf" ON)
+option(ENABLE_TRANSLATIONS "Enable the translations of the texts using tinygettext (downloaded)" ON)
 
 find_package(SDL2 REQUIRED)
 if(SDL2_DIR)
@@ -10,6 +12,16 @@ if(SDL2_DIR)
   endif()
   if(ENABLE_SDL2_IMAGE)
     find_package(SDL2_image)
+  endif()
+  if(ENABLE_SDL2_TTF)
+    # The static FreeType and libpng of vcpkg link ZLIB::ZLIB, but a static
+    # zlib (1.3.2) exports only ZLIB::ZLIBSTATIC.
+    find_package(ZLIB QUIET)
+    if(TARGET ZLIB::ZLIBSTATIC AND NOT TARGET ZLIB::ZLIB)
+      add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+      target_link_libraries(ZLIB::ZLIB INTERFACE ZLIB::ZLIBSTATIC)
+    endif()
+    find_package(SDL2_ttf)
   endif()
 endif()
 
@@ -35,9 +47,16 @@ target_check_style(tools)
 
 # Game library
 
-set(GAME_SOURCES building.cc
+set(GAME_SOURCES ai.cc
+                 ai-core.cc
+                 ai-manage.cc
+                 ai-rate.cc
+                 ai-road.cc
+                 ai-want.cc
+                 building.cc
                  flag.cc
                  game.cc
+                 integrity.cc
                  inventory.cc
                  map.cc
                  map-generator.cc
@@ -48,9 +67,17 @@ set(GAME_SOURCES building.cc
                  serf.cc
                  game-manager.cc)
 
-set(GAME_HEADERS building.h
+set(GAME_HEADERS ai.h
+                 ai-core.h
+                 ai-internal.h
+                 ai-manage.h
+                 ai-rate.h
+                 ai-road.h
+                 ai-want.h
+                 building.h
                  flag.h
                  game.h
+                 integrity.h
                  inventory.h
                  map.h
                  map-generator.h
@@ -100,6 +127,7 @@ target_check_style(platform)
 # Data library
 
 set(DATA_SOURCES data.cc
+                 data-source-mixed.cc
                  data-source-dos.cc
                  data-source-amiga.cc
                  data-source-legacy.cc
@@ -111,6 +139,7 @@ set(DATA_SOURCES data.cc
                  data-source.cc)
 
 set(DATA_HEADERS data.h
+                 data-source-mixed.h
                  data-source-dos.h
                  data-source-amiga.h
                  data-source-legacy.h
@@ -120,7 +149,8 @@ set(DATA_HEADERS data.h
                  xmi2mid.h
                  pcm2wav.h
                  data-source.h
-                 sprite-file.h)
+                 sprite-file.h
+                 font.h)
 
 if(ENABLE_SDL2_IMAGE AND SDL2_image_DIR)
   list(APPEND DATA_SOURCES sprite-file-sdl.cc)
@@ -128,15 +158,43 @@ else()
   list(APPEND DATA_SOURCES sprite-file-dummy.cc)
 endif()
 
+if(ENABLE_SDL2_TTF AND SDL2_ttf_DIR)
+  list(APPEND DATA_SOURCES font-sdl.cc)
+else()
+  list(APPEND DATA_SOURCES font-dummy.cc)
+endif()
+
+list(APPEND DATA_HEADERS translation.h)
+if(ENABLE_TRANSLATIONS)
+  include(Tinygettext)
+  list(APPEND DATA_SOURCES translation.cc)
+else()
+  list(APPEND DATA_SOURCES translation-dummy.cc)
+endif()
+
 add_library(data STATIC ${DATA_SOURCES} ${DATA_HEADERS})
+# Images and the font of the game's own (resources/), found next to the
+# program; from the build tree they are read from the sources.
+target_compile_definitions(data PRIVATE
+                           FREESERF_RESOURCES_DIR="${PROJECT_SOURCE_DIR}/resources"
+                           FREESERF_PO_DIR="${PROJECT_SOURCE_DIR}/po")
+if(ENABLE_TRANSLATIONS)
+  target_link_libraries(data tinygettext SDL2::SDL2)
+endif()
 if(ENABLE_SDL2_IMAGE AND SDL2_image_DIR)
   target_link_libraries(data SDL2::SDL2 SDL2_image::SDL2_image)
+endif()
+if(ENABLE_SDL2_TTF AND SDL2_ttf_DIR)
+  target_link_libraries(data SDL2::SDL2 SDL2_ttf::SDL2_ttf)
 endif()
 target_check_style(data)
 
 # FreeSerf executable
 
 set(OTHER_SOURCES pathfinder.cc
+                  advanced-box.cc
+                  box-frame.cc
+                  settings.cc
                   gfx.cc
                   viewport.cc
                   minimap.cc
@@ -152,6 +210,9 @@ set(OTHER_SOURCES pathfinder.cc
                   command_line.cc)
 
 set(OTHER_HEADERS pathfinder.h
+                  advanced-box.h
+                  box-frame.h
+                  settings.h
                   gfx.h
                   viewport.h
                   minimap.h
@@ -177,17 +238,94 @@ target_check_style(FreeSerf)
 target_link_libraries(FreeSerf game platform data tools)
 if(SDL2_DIR)
   target_link_libraries(FreeSerf SDL2::SDL2)
-  if(WIN32)
-    target_link_libraries(FreeSerf SDL2::SDL2main)
-  endif()
   if(SDL2_mixer_DIR)
     target_link_libraries(FreeSerf SDL2_mixer::SDL2_mixer)
   endif()
   if(SDL2_image_DIR)
     target_link_libraries(FreeSerf SDL2_image::SDL2_image)
   endif()
+  if(SDL2_ttf_DIR)
+    target_link_libraries(FreeSerf SDL2_ttf::SDL2_ttf)
+  endif()
 endif()
 install(TARGETS FreeSerf DESTINATION ".")
+
+# Images and the font of the game's own, next to the program (in the
+# bundle resources on macOS).
+file(GLOB RESOURCE_FILES "${PROJECT_SOURCE_DIR}/resources/*.png"
+                         "${PROJECT_SOURCE_DIR}/resources/*.ttf")
+if(APPLE)
+  target_sources(FreeSerf PRIVATE ${RESOURCE_FILES})
+  set_source_files_properties(${RESOURCE_FILES} PROPERTIES
+                              MACOSX_PACKAGE_LOCATION Resources/resources)
+else()
+  add_custom_command(TARGET FreeSerf POST_BUILD
+                     COMMAND ${CMAKE_COMMAND} -E make_directory
+                             "$<TARGET_FILE_DIR:FreeSerf>/resources"
+                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                             ${RESOURCE_FILES}
+                             "$<TARGET_FILE_DIR:FreeSerf>/resources")
+  install(FILES ${RESOURCE_FILES} DESTINATION "resources")
+endif()
+
+# The translations of the texts, next to the program (in the bundle
+# resources on macOS).
+file(GLOB PO_FILES "${PROJECT_SOURCE_DIR}/po/*.po")
+if(ENABLE_TRANSLATIONS AND PO_FILES)
+  if(APPLE)
+    target_sources(FreeSerf PRIVATE ${PO_FILES})
+    set_source_files_properties(${PO_FILES} PROPERTIES
+                                MACOSX_PACKAGE_LOCATION Resources/po)
+  else()
+    add_custom_command(TARGET FreeSerf POST_BUILD
+                       COMMAND ${CMAKE_COMMAND} -E make_directory
+                               "$<TARGET_FILE_DIR:FreeSerf>/po"
+                       COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                               ${PO_FILES}
+                               "$<TARGET_FILE_DIR:FreeSerf>/po")
+    install(FILES ${PO_FILES} DESTINATION "po")
+  endif()
+endif()
+
+# General MIDI SoundFont for the MIDI music of the DOS data: SDL3_mixer
+# plays MIDI with FluidSynth, which needs one. TimGM6mb (GPL-2) is
+# downloaded at configure time and installed next to the program (into
+# the bundle resources on macOS).
+option(ENABLE_SOUNDFONT "Download and install the TimGM6mb SoundFont" ON)
+if(ENABLE_SOUNDFONT AND ENABLE_SDL2_MIXER AND SDL2_mixer_DIR AND FALSE)  # SDL2_mixer plays MIDI with timidity, no SoundFont needed
+  set(SOUNDFONT_URL "https://raw.githubusercontent.com/musescore/musescore-old/master/mscore/share/sound/TimGM6mb.sf2")
+  set(SOUNDFONT_SHA256 "c5378b62028c920cb11e4803327983fee2f2cdff5dc89c708e39da417e51c854")
+  set(SOUNDFONT_FILE "${CMAKE_CURRENT_BINARY_DIR}/TimGM6mb.sf2")
+  if(EXISTS "${SOUNDFONT_FILE}")
+    file(SHA256 "${SOUNDFONT_FILE}" SOUNDFONT_HASH)
+  endif()
+  if(NOT SOUNDFONT_HASH STREQUAL SOUNDFONT_SHA256)
+    message(STATUS "Downloading SoundFont TimGM6mb")
+    file(DOWNLOAD "${SOUNDFONT_URL}" "${SOUNDFONT_FILE}" STATUS SOUNDFONT_STATUS)
+    file(SHA256 "${SOUNDFONT_FILE}" SOUNDFONT_HASH)
+    if(NOT SOUNDFONT_HASH STREQUAL SOUNDFONT_SHA256)
+      message(WARNING "Could not download the SoundFont (${SOUNDFONT_STATUS}); "
+                      "MIDI music needs one, see README.md")
+      file(REMOVE "${SOUNDFONT_FILE}")
+    endif()
+  endif()
+
+  if(EXISTS "${SOUNDFONT_FILE}")
+    set(SOUNDFONT_FILES "${SOUNDFONT_FILE}"
+        "${PROJECT_SOURCE_DIR}/cmake/soundfont/TimGM6mb.txt"
+        "${PROJECT_SOURCE_DIR}/cmake/soundfont/GPL-2.txt")
+    if(APPLE)
+      target_sources(FreeSerf PRIVATE ${SOUNDFONT_FILES})
+      set_source_files_properties(${SOUNDFONT_FILES} PROPERTIES
+                                  MACOSX_PACKAGE_LOCATION Resources)
+    else()
+      add_custom_command(TARGET FreeSerf POST_BUILD
+                         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                 "${SOUNDFONT_FILE}" "$<TARGET_FILE_DIR:FreeSerf>")
+      install(FILES ${SOUNDFONT_FILES} DESTINATION ".")
+    endif()
+  endif()
+endif()
 
 if(WIN32)
   install(CODE [[

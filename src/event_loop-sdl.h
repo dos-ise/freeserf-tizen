@@ -1,4 +1,4 @@
-/*
+﻿/*
  * event_loop-sdl.h - User and system events handling
  *
  * Copyright (C) 2012-2017  Jon Lund Steffensen <jonlst@gmail.com>
@@ -22,52 +22,53 @@
 #ifndef SRC_EVENT_LOOP_SDL_H_
 #define SRC_EVENT_LOOP_SDL_H_
 
-#include <list>
 #include <SDL.h>
 
-#include "src/event_loop.h"
+#include <list>
 
-class Frame;
+#include "src/event_loop.h"
 
 class EventLoopSDL : public EventLoop {
  public:
   typedef enum EventUserType {
-    EventUserTypeStep,
     EventUserTypeQuit,
     EventUserTypeCall,
   } EventUserType;
 
  protected:
   std::list<DeferredCall> deferred_calls;
-  float zoom_factor;
+  float zoom_factor;   // Zoom of the whole screen (panel and boxes)
+  float zoom_level;    // Zoom of the map view, 1 = none
   float screen_factor_x;
   float screen_factor_y;
-  Uint32 eventUserTypeStep;
-  
-  // NEW: State variables for Emscripten main loop
-  bool running;
-  SDL_TimerID timer_id;
-  Frame *screen;
+
+  /* Mouse state between events. */
   int drag_button;
   int drag_x;
   int drag_y;
   unsigned int last_click[6];
   int last_click_x;
   int last_click_y;
-  unsigned int last_step_time;
+
+  Frame *screen;
+
+  /* Emscripten main loop state. */
+  Uint64 next_step;
+  bool running;
 
  public:
   EventLoopSDL();
-  virtual ~EventLoopSDL();
 
   virtual void quit();
   virtual void run();
-  virtual void run_iteration();  // NEW: For Emscripten
+  virtual void run_iteration();  // For the Emscripten main loop
   virtual void deferred_call(DeferredCall call, void *data);
+  virtual unsigned int get_ticks();
 
  protected:
   void zoom(float delta);
-  static Uint32 timer_callback(Uint32 interval, void *param);
+  void apply_zoom();
+  bool handle_sdl_event(const SDL_Event &event);
 };
 
 #endif  // SRC_EVENT_LOOP_SDL_H_

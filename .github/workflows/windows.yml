@@ -8,6 +8,9 @@ on:
 
 jobs:
   build:
+    # Attaches the packages to a published release.
+    permissions:
+      contents: write
     runs-on: windows-latest
 
     strategy:
@@ -20,6 +23,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+          # The version comes from the latest tag (git describe).
+          fetch-depth: 0
 
       - name: Setup environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -28,7 +33,7 @@ jobs:
 
       # vcpkg's binary cache in a directory kept with actions/cache. The
       # x-gha backend run-vcpkg sets up by default was removed from vcpkg,
-      # so without this SDL2 and its dependencies are built on every run.
+      # so without this SDL3 and its dependencies are built on every run.
       - name: Cache vcpkg packages
         uses: actions/cache@v6
         with:
@@ -85,3 +90,13 @@ jobs:
         with:
           name: FreeSerf-${{ matrix.architecture }}-${{ matrix.buildtype }}
           path: ./build/FreeSerf-${{ matrix.architecture }}-${{ matrix.buildtype }}.exe
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            ./build/FreeSerf-${{ matrix.architecture }}-${{ matrix.buildtype }}.exe \
+            --clobber

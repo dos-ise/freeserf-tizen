@@ -1,4 +1,4 @@
-/*
+﻿/*
  * video-sdl.cc - SDL graphics rendering
  *
  * Copyright (C) 2013-2018  Jon Lund Steffensen <jonlst@gmail.com>
@@ -21,9 +21,9 @@
 
 #include "src/video-sdl.h"
 
-#include <sstream>
-
 #include <SDL.h>
+
+#include <sstream>
 
 ExceptionSDL::ExceptionSDL(const std::string &description) throw()
   : ExceptionVideo(description) {
@@ -41,7 +41,6 @@ Uint32 VideoSDL::pixel_format = SDL_PIXELFORMAT_RGBA8888;
 VideoSDL::VideoSDL() {
   screen = nullptr;
   cursor = nullptr;
-  fullscreen = false;
   zoom_factor = 1.f;
 
   Log::Info["video"] << "Initializing \"sdl\".";
@@ -52,7 +51,7 @@ VideoSDL::VideoSDL() {
   }
 
   /* Initialize defaults and Video subsystem */
-  if (SDL_VideoInit(NULL) != 0) {
+  if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
     throw ExceptionSDL("Unable to initialize SDL video");
   }
 
@@ -86,8 +85,8 @@ VideoSDL::VideoSDL() {
   SDL_GetRendererInfo(renderer, &render_info);
   for (Uint32 i = 0; i < render_info.num_texture_formats; i++) {
     Uint32 format = render_info.texture_formats[i];
-    int bpp = SDL_BITSPERPIXEL(format);
-    if (32 == bpp) {
+    int format_bpp = SDL_BITSPERPIXEL(format);
+    if (32 == format_bpp) {
       pixel_format = format;
       break;
     }
@@ -95,13 +94,14 @@ VideoSDL::VideoSDL() {
   SDL_PixelFormatEnumToMasks(pixel_format, &bpp,
                              &Rmask, &Gmask, &Bmask, &Amask);
 
-  /* Set scaling mode */
-  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+  /* Keep the pixels sharp when a frame is scaled (zoom, high-DPI
+     displays). */
+  SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
 
   int w = 0;
   int h = 0;
   SDL_GL_GetDrawableSize(window, &w, &h);
-  set_resolution(w, h, fullscreen);
+  set_resolution(w, h, false);
 }
 
 VideoSDL::~VideoSDL() {
@@ -110,7 +110,7 @@ VideoSDL::~VideoSDL() {
     screen = nullptr;
   }
   set_cursor(nullptr, 0, 0);
-  SDL_VideoQuit();
+  SDL_QuitSubSystem(SDL_INIT_VIDEO);
 }
 
 Video &
@@ -121,8 +121,8 @@ Video::get_instance() {
 
 SDL_Surface *
 VideoSDL::create_surface(int width, int height) {
-  SDL_Surface *surf = SDL_CreateRGBSurface(0, width, height, bpp,
-                                           Rmask, Gmask, Bmask, Amask);
+  SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, width, height, 32,
+                                                     pixel_format);
   if (surf == nullptr) {
     throw ExceptionSDL("Unable to create SDL surface");
   }
@@ -132,11 +132,15 @@ VideoSDL::create_surface(int width, int height) {
 
 void
 VideoSDL::set_resolution(unsigned int width, unsigned int height, bool fs) {
-  /* Set fullscreen mode */
-  int r = SDL_SetWindowFullscreen(window,
-                                  fs ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-  if (r < 0) {
-    throw ExceptionSDL("Unable to set window fullscreen");
+  /* Set fullscreen mode only when it changes: the window may have entered
+     or left fullscreen by itself (the maximize button of macOS), and
+     setting the old state again would undo that. Fullscreen without a
+     display mode is desktop fullscreen. */
+  if (fs != is_fullscreen()) {
+    if (SDL_SetWindowFullscreen(window,
+                                fs ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0) {
+      throw ExceptionSDL("Unable to set window fullscreen");
+    }
   }
 
   if (screen == nullptr) {
@@ -149,13 +153,10 @@ VideoSDL::set_resolution(unsigned int width, unsigned int height, bool fs) {
   }
   screen->texture = create_texture(width, height);
 
-  /* Set logical size of screen */
-  r = SDL_RenderSetLogicalSize(renderer, width, height);
-  if (r < 0) {
+  /* Set logical size of screen. */
+  if (SDL_RenderSetLogicalSize(renderer, width, height) != 0) {
     throw ExceptionSDL("Unable to set logical size");
   }
-
-  fullscreen = fs;
 }
 
 void
@@ -181,7 +182,7 @@ VideoSDL::set_fullscreen(bool enable) {
 
 bool
 VideoSDL::is_fullscreen() {
-  return fullscreen;
+  return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
 }
 
 Video::Frame *
@@ -219,7 +220,7 @@ VideoSDL::destroy_image(Video::Image *image) {
 
 void
 VideoSDL::warp_mouse(int x, int y) {
-  SDL_WarpMouseInWindow(nullptr, x, y);
+  SDL_WarpMouseInWindow(window, x, y);
 }
 
 SDL_Surface *
@@ -288,8 +289,7 @@ VideoSDL::draw_image(const Video::Image *image, int x, int y, int y_offset,
   /* Blit sprite */
   SDL_SetRenderTarget(renderer, dest->texture);
   SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-  int r = SDL_RenderCopy(renderer, image->texture, &src_rect, &dest_rect);
-  if (r < 0) {
+  if (SDL_RenderCopy(renderer, image->texture, &src_rect, &dest_rect) != 0) {
     throw ExceptionSDL("RenderCopy error");
   }
 }
@@ -302,8 +302,21 @@ VideoSDL::draw_frame(int dx, int dy, Video::Frame *dest, int sx, int sy,
 
   SDL_SetRenderTarget(renderer, dest->texture);
   SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-  int r = SDL_RenderCopy(renderer, src->texture, &src_rect, &dest_rect);
-  if (r < 0) {
+  if (SDL_RenderCopy(renderer, src->texture, &src_rect, &dest_rect) != 0) {
+    throw ExceptionSDL("RenderCopy error");
+  }
+}
+
+void
+VideoSDL::draw_frame_scaled(int dx, int dy, int dw, int dh,
+                            Video::Frame *dest, Video::Frame *src,
+                            int w, int h) {
+  SDL_Rect dest_rect = { dx, dy, dw, dh };
+  SDL_Rect src_rect = { 0, 0, w, h };
+
+  SDL_SetRenderTarget(renderer, dest->texture);
+  SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+  if (SDL_RenderCopy(renderer, src->texture, &src_rect, &dest_rect) != 0) {
     throw ExceptionSDL("RenderCopy error");
   }
 }
@@ -326,8 +339,7 @@ VideoSDL::fill_rect(int x, int y, unsigned int width, unsigned int height,
   /* Fill rectangle */
   SDL_SetRenderTarget(renderer, dest->texture);
   SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 0xff);
-  int r = SDL_RenderFillRect(renderer, &rect);
-  if (r < 0) {
+  if (SDL_RenderFillRect(renderer, &rect) != 0) {
     throw ExceptionSDL("RenderFillRect error");
   }
 }
@@ -343,6 +355,8 @@ VideoSDL::draw_line(int x, int y, int x1, int y1, const Video::Color color,
 void
 VideoSDL::swap_buffers() {
   SDL_SetRenderTarget(renderer, nullptr);
+  SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xff);
+  SDL_RenderClear(renderer);
   SDL_RenderCopy(renderer, screen->texture, nullptr, nullptr);
   SDL_RenderPresent(renderer);
 }
@@ -361,6 +375,7 @@ VideoSDL::set_cursor(void *data, unsigned int width, unsigned int height) {
 
   SDL_Surface *surface = create_surface_from_data(data, width, height);
   cursor = SDL_CreateColorCursor(surface, 8, 8);
+  SDL_FreeSurface(surface);
   SDL_SetCursor(cursor);
 }
 

@@ -21,6 +21,7 @@
 
 #include "src/savegame.h"
 
+#include <cstdlib>
 #include <sstream>
 #include <vector>
 #include <map>
@@ -32,6 +33,7 @@
 #include <algorithm>
 
 #include "src/game.h"
+#include "src/integrity.h"
 #include "src/log.h"
 #include "src/debug.h"
 #include "src/configfile.h"
@@ -345,8 +347,9 @@ SaveReaderTextValue::operator >> (int &val) const {
 
 const SaveReaderTextValue&
 SaveReaderTextValue::operator >> (unsigned int &val) const {
-  int result = atoi(value.c_str());
-  val = result;
+  /* Not atoi(): a value over the range of int (as 4294967295) stays,
+     whatever the size of long (32 bits on Windows). */
+  val = static_cast<unsigned int>(std::strtoull(value.c_str(), nullptr, 10));
 
   return *this;
 }
@@ -756,6 +759,8 @@ GameStore::load(const std::string &path, Game *game) {
     }
   }
 
+  IntegrityCheck::run(game, true);
+
   return true;
 }
 
@@ -821,6 +826,7 @@ GameStore::read(std::istream *is, Game *game) {
   } catch (...) {
     return false;
   }
+  IntegrityCheck::run(game, true);
   return true;
 }
 

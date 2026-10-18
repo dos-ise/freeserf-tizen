@@ -334,9 +334,12 @@
                 FreeSerf(Module).then(function (instance) {
                     FreeserfInstance = instance;
 
-                    // Erstelle /data Verzeichnis
+                    // Erstelle /data und /resources Verzeichnisse
                     try {
                         instance.FS.mkdir('/data');
+                    } catch (e) { }
+                    try {
+                        instance.FS.mkdir('/resources');
                     } catch (e) { }
 
                     // Lade Game Data Files
@@ -358,6 +361,29 @@
                             })
                             .catch(function () {
                                 // Datei nicht gefunden - OK, versuche nächste
+                                return null;
+                            });
+
+                        loadPromises.push(promise);
+                    });
+
+                    // Lade die Ressourcen (TrueType-Font, UI-Bilder)
+                    var resourceFiles = ['settlers.ttf', 'button-advanced.png'];
+                    resourceFiles.forEach(function (filename) {
+                        var promise = fetch('resources/' + filename)
+                            .then(function (response) {
+                                if (!response.ok) {
+                                    throw new Error('Not found');
+                                }
+                                return response.arrayBuffer();
+                            })
+                            .then(function (buffer) {
+                                var uint8 = new Uint8Array(buffer);
+                                instance.FS.writeFile('/resources/' + filename, uint8);
+                                return filename;
+                            })
+                            .catch(function () {
+                                // Ressource nicht gefunden - OK, Fallback wird genutzt
                                 return null;
                             });
 

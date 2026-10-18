@@ -42,6 +42,7 @@ Building::Building(Game *game, unsigned int index)
   holder = false;
   pos = 0;
   progress = 0;
+  under_attack = false;
   u = { 0 };
   inventory = nullptr;
 
@@ -163,6 +164,16 @@ Building::build_progress() {
   player->building_built(this);
 
   return true;
+}
+
+/* The bit 0 of the progress of a finished military building of a save is
+   whether it is under attack. */
+void
+Building::split_attack_bit() {
+  if (!constructing && is_military()) {
+    under_attack = BIT_TEST(progress, 0);
+    progress &= ~BIT(0);
+  }
 }
 
 void
@@ -664,7 +675,8 @@ Building::update() {
           Player *player = game->get_player(get_owner());
           int total_tree = stock[0].requested + stock[0].available;
           if (total_tree < stock[0].maximum) {
-            stock[0].prio =
+            /* No planks during a planks emergency (Amiga @0xc6c0). */
+            stock[0].prio = player->is_out_of_planks() ? 0 :
               player->get_planks_boatbuilder() >> (8 + total_tree);
           } else {
             stock[0].prio = 0;
@@ -851,7 +863,9 @@ Building::update() {
           Player *player = game->get_player(get_owner());
           int total_tree = stock[0].requested + stock[0].available;
           if (total_tree < stock[0].maximum) {
-            stock[0].prio = player->get_planks_toolmaker() >> (8 + total_tree);
+            /* No planks during a planks emergency (Amiga @0xc72c). */
+            stock[0].prio = player->is_out_of_planks() ? 0 :
+              player->get_planks_toolmaker() >> (8 + total_tree);
           } else {
             stock[0].prio = 0;
           }
@@ -956,17 +970,45 @@ void
 Building::update_unfinished() {
   Player *player = game->get_player(get_owner());
 
+  /* During an emergency only the designated buildings get a builder and
+     planks or stone (Amiga update_unfinished_building @0xc01e). */
+  bool designated = player->is_emergency_designated(get_index());
+
   /* Request builder serf */
   if (!serf_request_failed && !holder && !serf_requested) {
     progress = 1;
+    if (player->is_emergency_active() && !designated) {
+      serf_request_failed = true;
+      return;
+    }
     serf_request_failed = !send_serf_to_building(Serf::TypeBuilder,
                                                  Resource::TypeHammer,
                                                  Resource::TypeNone);
   }
 
+  /* During a planks or stone emergency computer players demolish
+     construction sites at random, the less progress the more likely
+     (Amiga @0xc07a / 0xc10e). In the stone branch the original tests the
+     designated stonecutter the wrong way round (bne @0xc10c); not
+     reproduced. */
+  if ((player->is_out_of_planks() || player->is_out_of_stone()) &&
+      !designated && player->is_ai()) {
+    int rolls = (player->is_out_of_planks() ? 1 : 0) +
+                (player->is_out_of_stone() ? 1 : 0);
+    unsigned int limit = static_cast<uint16_t>(~progress) >> 5;
+    for (int i = 0; i < rolls; i++) {
+      if (game->random_int() < limit) {
+        game->demolish_building(pos, player);
+        return;
+      }
+    }
+  }
+
   /* Request planks */
   int total_planks = stock[0].requested + stock[0].available;
-  if (total_planks < stock[0].maximum) {
+  if (player->is_out_of_planks() && !designated) {
+    stock[0].prio = 0;
+  } else if (total_planks < stock[0].maximum) {
     int planks_prio = player->get_planks_construction() >> (8 + total_planks);
     if (!holder) planks_prio >>= 2;
     stock[0].prio = planks_prio & ~BIT(0);
@@ -976,7 +1018,9 @@ Building::update_unfinished() {
 
   /* Request stone */
   int total_stone = stock[1].requested + stock[1].available;
-  if (total_stone < stock[1].maximum) {
+  if (player->is_out_of_stone() && !designated) {
+    stock[1].prio = 0;
+  } else if (total_stone < stock[1].maximum) {
     int stone_prio = 0xff >> total_stone;
     if (!holder) stone_prio >>= 2;
     stock[1].prio = stone_prio & ~BIT(0);
@@ -1014,8 +1058,15 @@ Building::update_unfinished_adv() {
     return;
   }
 
-  /* Request digger */
+  /* Request digger; during an emergency only for the lumberjack,
+     stonecutter and sawmill sites (Amiga @0xbfc0). */
   if (!serf_request_failed) {
+    Player *player = game->get_player(get_owner());
+    if (player->is_emergency_active() && type != TypeLumberjack &&
+        type != TypeStonecutter && type != TypeSawmill) {
+      serf_request_failed = true;
+      return;
+    }
     serf_request_failed = !send_serf_to_building(Serf::TypeDigger,
                                                  Resource::TypeShovel,
                                                  Resource::TypeNone);
@@ -1291,6 +1342,7 @@ operator >> (SaveReaderBinary &reader, Building &building) {
   building.first_knight = v16;
   reader >> v16;  // 12
   building.progress = v16;
+  building.split_attack_bit();
 
   if (has_inventory && !building.constructing) {
     reader >> v32;  // 14
@@ -1420,6 +1472,10 @@ operator >> (SaveReaderText &reader, Building &building) {
     building.active = (temp != 0);
     reader.value("burning") >> temp;
     building.burning = (temp != 0);
+    /* Older saves did not keep it: the fire ends at once. */
+    if (reader.has_value("burning_counter")) {
+      reader.value("burning_counter") >> building.burning_counter;
+    }
     reader.value("holder") >> temp;
     building.holder = (temp != 0);
     reader.value("serf_requested") >> temp;
@@ -1451,6 +1507,7 @@ operator >> (SaveReaderText &reader, Building &building) {
 
   reader.value("serf_index") >> building.first_knight;
   reader.value("progress") >> building.progress;
+  building.split_attack_bit();
   if (reader.has_value("queued_type")) {
     unsigned int queued_type;
     reader.value("queued_type") >> queued_type;
@@ -1483,6 +1540,7 @@ operator << (SaveWriterText &writer, Building &building) {
   writer.value("serf_request_failed") << building.serf_request_failed;
   writer.value("serf_requested") << building.serf_requested;
   writer.value("burning") << building.burning;
+  writer.value("burning_counter") << building.burning_counter;
   writer.value("active") << building.active;
   writer.value("holder") << building.holder;
 
@@ -1501,7 +1559,8 @@ operator << (SaveWriterText &writer, Building &building) {
   writer.value("stock[1].maximum") << building.stock[1].maximum;
 
   writer.value("serf_index") << building.first_knight;
-  writer.value("progress") << building.progress;
+  writer.value("progress") << (building.progress |
+                                (building.under_attack ? BIT(0) : 0));
   if (building.queued_type != Building::TypeNone) {
     writer.value("queued_type") << building.queued_type;
   }

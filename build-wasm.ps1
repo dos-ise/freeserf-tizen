@@ -1,4 +1,4 @@
-# build-wasm.ps1 - Direct em++ build for freeserf-wasm (no CMake required)
+﻿# build-wasm.ps1 - Direct em++ build for freeserf-wasm (no CMake required)
 # Produces build-wasm/FreeSerf.js + FreeSerf.wasm with the same flags as the
 # Emscripten section in CMakeLists.txt.
 #
@@ -38,15 +38,16 @@ if (Test-Path $emsdkEnv) {
 
 $sources = @(
     "debug.cc","log.cc","configfile.cc","buffer.cc",
-    "building.cc","flag.cc","game.cc","inventory.cc","map.cc","map-generator.cc",
+    "ai.cc","ai-core.cc","ai-manage.cc","ai-rate.cc","ai-road.cc","ai-want.cc",
+    "building.cc","flag.cc","game.cc","integrity.cc","inventory.cc","map.cc","map-generator.cc",
     "mission.cc","player.cc","random.cc","savegame.cc","serf.cc","game-manager.cc",
     "video.cc","audio.cc","event_loop.cc","video-sdl.cc","event_loop-sdl.cc","audio-sdlmixer.cc",
-    "data.cc","data-source-dos.cc","data-source-amiga.cc","data-source-legacy.cc",
+    "data.cc","data-source-mixed.cc","data-source-dos.cc","data-source-amiga.cc","data-source-legacy.cc",
     "data-source-custom.cc","tpwm.cc","sfx2wav.cc","xmi2mid.cc","pcm2wav.cc",
-    "data-source.cc","sprite-file-sdl.cc",
-    "pathfinder.cc","gfx.cc","viewport.cc","minimap.cc","interface.cc","gui.cc",
-    "popup.cc","game-init.cc","notification.cc","panel.cc","version.cc",
-    "text-input.cc","list.cc","command_line.cc","freeserf.cc"
+    "data-source.cc","sprite-file-sdl.cc","font-sdl.cc","translation-dummy.cc",
+    "pathfinder.cc","advanced-box.cc","box-frame.cc","settings.cc","gfx.cc","viewport.cc",
+    "minimap.cc","interface.cc","gui.cc","popup.cc","game-init.cc","notification.cc",
+    "panel.cc","version.cc","text-input.cc","list.cc","command_line.cc","freeserf.cc"
 )
 
 $srcArgs = $sources | ForEach-Object { Join-Path $src $_ }
@@ -55,7 +56,7 @@ $compileFlags = @(
     "-std=c++11",
     "-O3", "-flto",
     "-fexceptions",
-    "-sUSE_SDL=2", "-sUSE_SDL_MIXER=2", "-sUSE_SDL_IMAGE=2",
+    "-sUSE_SDL=2", "-sUSE_SDL_MIXER=2", "-sUSE_SDL_IMAGE=2", "-sUSE_SDL_TTF=2",
     "-sSDL2_MIXER_FORMATS=mod,mid",
     '-DPACKAGE_BUGREPORT=\"https://github.com/freeserf/freeserf/issues\"',
     "-I$repo",

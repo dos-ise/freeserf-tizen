@@ -28,6 +28,7 @@
 #include "src/map.h"
 #include "src/serf.h"
 #include "src/objects.h"
+#include "src/ai.h"
 
 class Serf;
 class Inventory;
@@ -79,6 +80,8 @@ typedef std::vector<PosTimer> PosTimers;
 
 /* Player object. Holds the game state of a player. */
 class Player : public GameObject {
+  /* The computer player reads the fields as the original does. */
+  friend class AI;
  public:
   typedef struct Color {
     unsigned char red;
@@ -95,8 +98,25 @@ class Player : public GameObject {
 
   Color color; /* ADDED */
   size_t face;
-  int flags;
-  int build;
+
+  /* The flags of the player (packed as "flags" in the saves, the bits of
+     the original). */
+  bool castle;                 /* 0: has built its castle */
+  bool strongest;              /* 1: sends the strongest knights to fight */
+  bool knight_cycling;         /* 2: cycling the knights */
+  bool message;                /* 3: a message in the queue */
+  bool knight_level_reduced;   /* 4: knights taken out while cycling */
+  bool knight_cycling_second;  /* 5: second phase of the cycling */
+  bool in_game;                /* 6: takes turns in the game */
+  bool computer;               /* 7: a computer player */
+
+  /* What the player may build at the cursor of the AI (packed as "build"
+     in the saves). */
+  bool no_military;      /* 0: no military building there */
+  bool no_flag;          /* 1: no flag there */
+  bool serfs_spawning;   /* 2: new serfs are spawned in the castle */
+  bool castle_standing;  /* 3: the castle stands */
+  bool water_roads;      /* 4: the AI builds roads on water */
   int completed_building_count[24];
   int incomplete_building_count[24];
   int inventory_prio[26];
@@ -107,6 +127,25 @@ class Player : public GameObject {
 
   int building;
   int castle_inventory;
+
+  /* Emergency program (Amiga player_update_emergency_program @0xb23c,
+     packed as "emergency_flags" in the saves). */
+  bool emergency_over;         /* 0 */
+  bool out_of_planks;          /* 1 */
+  bool out_of_stone;           /* 2 */
+  bool emergency_lumberjack;   /* 3: its lumberjack is ready */
+  bool emergency_sawmill;      /* 4: its sawmill is ready */
+  bool emergency_stone;        /* 5: its stonecutter or a stone mine */
+  bool emergency_active;       /* 6 */
+  int emergency_counter;
+  unsigned int extra_planks;
+  unsigned int extra_stone;
+  unsigned int lumberjack_index;
+  unsigned int sawmill_index;
+  unsigned int stonecutter_index;
+
+  /* Computer player (Amiga ptr+0xfc..0x1013). */
+  PlayerAI ai;
   int cont_search_after_non_optimal_find;
   int knights_to_spawn;
   unsigned int total_land_area;
@@ -178,37 +217,65 @@ class Player : public GameObject {
   void init(unsigned int intelligence, unsigned int supplies,
             unsigned int reproduction);
   void init_view(Color color, unsigned int face);
+  void init_passive(Color color);
 
   Color get_color() const { return color; }
   size_t get_face() const { return face; }
 
   /* Whether player has built the initial castle. */
-  bool has_castle() const { return (flags & 1); }
+  bool has_castle() const { return castle; }
+  /* Chance of an AI step per scheduler slot, out of 0x10000. */
+  unsigned int get_ai_intelligence() const {
+    return static_cast<unsigned int>(ai_intelligence); }
   /* Whether the strongest knight should be sent to fight. */
-  bool send_strongest() const { return ((flags >> 1) & 1); }
-  void drop_send_strongest() { flags &= ~BIT(1); }
-  void set_send_strongest() { flags |= BIT(1); }
+  bool send_strongest() const { return strongest; }
+  void drop_send_strongest() { strongest = false; }
+  void set_send_strongest() { strongest = true; }
   /* Whether cycling of knights is in progress. */
-  bool cycling_knight() const { return ((flags >> 2) & 1); }
+  bool cycling_knight() const { return knight_cycling; }
   /* Whether a message is queued for this player. */
-  bool has_message() const { return ((flags >> 3) & 1); }
-  void drop_message() { flags &= ~BIT(3); }
+  bool has_message() const { return message; }
+  void drop_message() { message = false; }
   /* Whether the knight level of military buildings is temporarily
    reduced bacause of cycling of the knights. */
-  bool reduced_knight_level() const { return ((flags >> 4) & 1); }
+  bool reduced_knight_level() const { return knight_level_reduced; }
   /* Whether the cycling of knights is in the second phase. */
-  bool cycling_second() const { return ((flags >> 5) & 1); }
+  bool cycling_second() const { return knight_cycling_second; }
   /* Whether this player is a computer controlled opponent. */
-  bool is_ai() const { return ((flags >> 7) & 1); }
+  /* Only the players in the game take turns; tutorial 6's enemy does not
+     (Amiga player flag bit 6). */
+  bool is_in_game() const { return in_game; }
+  bool is_ai() const { return computer; }
+
+  bool is_emergency_active() const { return emergency_active; }
+  bool is_out_of_planks() const { return out_of_planks; }
+  bool is_out_of_stone() const { return out_of_stone; }
+  bool is_emergency_designated(unsigned int index) const {
+    return (index != 0) && (index == lumberjack_index ||
+                            index == sawmill_index ||
+                            index == stonecutter_index); }
+  void start_emergency_program(unsigned int planks, unsigned int stone);
+  void designate_emergency_building(const Building *building);
+  void building_deleted(unsigned int index);
+  void stone_mine_working() { emergency_stone = true; }
+  void update_emergency_program();
 
   /* Whether player is prohibited from building military
    buildings at current position. */
-  bool allow_military() const { return !(build & 1); }
+  bool allow_military() const { return !no_military; }
   /* Whether player is prohibited from building flag at
    current position. */
-  bool allow_flag() const { return !((build >> 1) & 1); }
+  bool allow_flag() const { return !no_flag; }
   /* Whether player can spawn new serfs. */
-  bool can_spawn() const { return ((build >> 2) & 1); }
+  bool can_spawn() const { return serfs_spawning; }
+
+  /* The flags as the bits of the original, for the saves. */
+  int get_flags_bits() const;
+  void set_flags_bits(int bits);
+  int get_build_bits() const;
+  void set_build_bits(int bits);
+  int get_emergency_bits() const;
+  void set_emergency_bits(int bits);
 
   unsigned int get_serf_count(int type) const { return serf_count[type]; }
   int get_flag_prio(int res) const { return flag_prio[res]; }
@@ -233,6 +300,8 @@ class Player : public GameObject {
   int get_knight_occupation(size_t threat_level) const {
     return knight_occupation[threat_level]; }
   void change_knight_occupation(int index, int adjust_max, int delta);
+  void set_knight_occupation(size_t threat_level, int value) {
+    knight_occupation[threat_level] = value; }
   void increase_castle_knights() { castle_knights++; }
   void decrease_castle_knights() { castle_knights--; }
   int get_castle_knights() const { return castle_knights; }
@@ -260,6 +329,8 @@ class Player : public GameObject {
   void decrease_res_count(Resource::Type type) { resource_count[type]--; }
 
   void building_founded(Building *building);
+  /* The castle of a save that did not keep it. */
+  void restore_castle(Building *castle);
   void building_built(Building *building);
   void building_captured(Building *building);
   void building_demolished(Building *building);

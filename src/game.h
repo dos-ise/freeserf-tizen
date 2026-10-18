@@ -45,6 +45,10 @@ class SaveReaderText;
 class SaveWriterText;
 
 class Game {
+  /* The computer player reads the fields as the original does. */
+  friend class AI;
+  /* The consistency check after loading reads them too. */
+  friend class IntegrityCheck;
  public:
   typedef std::list<Serf*> ListSerfs;
   typedef std::list<Building*> ListBuildings;
@@ -60,6 +64,18 @@ class Game {
   PMap map;
 
   typedef std::map<unsigned int, unsigned int> Values;
+
+ public:
+  /* Game types of the original (Amiga game+0x352). */
+  typedef enum GameType {
+    GameTypeMission = 0,
+    GameTypeTutorial = 1,
+    GameTypeOnePlayer = 2,
+    GameTypeTwoPlayers = 3,
+    GameTypeDemo = 4,
+  } GameType;
+
+ protected:
   int map_gold_morale_factor;
   unsigned int gold_total;
 
@@ -97,7 +113,15 @@ class Game {
   int tutorial_level;
   int mission_level;
   int map_preserve_bugs;
-  int player_score_leader;
+  /* The clear leaders of the land and of the military, -1 none (packed as
+     "player_score_leader" in the saves: bits 0..3 and 4..7). */
+  int land_leader;
+  int military_leader;
+  int winning_player;
+  bool game_end_pending;
+
+  /* Work fields of the computer players. */
+  GameAI ai_game;
 
   int knight_morale_counter;
   int inventory_schedule_counter;
@@ -109,6 +133,18 @@ class Game {
   PMap get_map() { return map; }
 
   unsigned int get_tick() const { return tick; }
+  bool is_paused() const { return game_speed == 0; }
+  GameAI &get_ai_game() { return ai_game; }
+  void set_max_next_index(unsigned int value) { max_next_index = value; }
+
+  int get_game_type() const { return game_type; }
+  int get_mission_level() const { return mission_level; }
+  int get_tutorial_level() const { return tutorial_level; }
+  void set_game_type(int type, int level);
+  /* The winner once the game is decided, -1 before. */
+  int get_winning_player() const { return winning_player; }
+  bool is_game_end_pending() const { return game_end_pending; }
+  void clear_game_end_pending() { game_end_pending = false; }
   unsigned int get_const_tick() const { return const_tick; }
   unsigned int get_gold_morale_factor() const { return map_gold_morale_factor; }
   unsigned int get_gold_total() const { return gold_total; }
@@ -122,6 +158,7 @@ class Game {
   unsigned int add_player(unsigned int intelligence, unsigned int supplies,
                           unsigned int reproduction);
   bool init(unsigned int map_size, const Random &random);
+  void init_tutorial_enemy(const Player::Color &color);
 
   void update();
   void pause();
@@ -212,7 +249,6 @@ class Game {
   ListSerfs get_serfs_at_pos(MapPos pos);
 
   Player *get_next_player(const Player *player);
-  unsigned int get_enemy_score(const Player *player) const;
   void building_captured(Building *building);
   void clear_search_id();
 
@@ -228,7 +264,14 @@ class Game {
   void record_player_history(int max_level, int aspect,
                              const int history_index[], const Values &values);
   int calculate_clear_winner(const Values &values);
+  void update_winner();
+  bool place_flag(MapPos pos, Player *player);
+  Building *place_building(MapPos pos, Building::Type type, Player *player);
+  void build_occupied_military(MapPos pos, Building::Type type,
+                               Player *player);
+  void update_tutorial();
   void update_game_stats();
+  void set_score_leader_bits(int bits);
   void get_resource_estimate(MapPos pos, int weight, int estimates[5]);
   bool road_segment_in_water(MapPos pos, Direction dir) const;
   void flag_reset_transport(Flag *flag);

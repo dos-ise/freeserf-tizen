@@ -1,11 +1,10 @@
-if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+﻿if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 endif()
 
 cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
 
-project(FreeSerf)
-set(PROJECT_VERSION "0.3.0")
+project(FreeSerf VERSION 0.5.0)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -40,12 +39,13 @@ if(EMSCRIPTEN)
     # KEIN .html Suffix! Wir verwenden unsere eigene index.html
     # set(CMAKE_EXECUTABLE_SUFFIX ".html")
     
-    # SDL2 über Emscripten Ports
+    # SDL2 Ã¼ber Emscripten Ports
     # (Die Targets werden von cmake/FindSDL2.cmake erstellt)
     # Muss auch beim Kompilieren aktiv sein, damit die SDL-Header gefunden werden.
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL=2")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL_MIXER=2")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL_IMAGE=2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sUSE_SDL_TTF=2")
     # Nur WAV/MIDI/MOD - kein OGG (vermeidet den ogg-Port-Download)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sSDL2_MIXER_FORMATS=mod,mid")
 
@@ -74,10 +74,10 @@ if(EMSCRIPTEN)
     # Browser Environment
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sENVIRONMENT=web")
 
-    # Export FS für Laufzeit-Dateiladen (Spieldaten)
+    # Export FS fÃ¼r Laufzeit-Dateiladen (Spieldaten)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,FS,callMain")
 
-    # Filesystem Support (für Savegames via IndexedDB)
+    # Filesystem Support (fÃ¼r Savegames via IndexedDB)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lidbfs.js")
 
     message(STATUS "Game data will be loaded at runtime via FS")
@@ -88,6 +88,7 @@ endif()
 # ============================================================================
 
 include(CppLint)
+include(Translations)
 enable_check_style()
 
 add_subdirectory(src)

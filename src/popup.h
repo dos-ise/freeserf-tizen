@@ -97,7 +97,8 @@ class PopupBox : public GuiObject {
     TypeJsCalibUpLeft,
     TypeJsCalibDownRight,
     TypeJsCalibCenter,
-    TypeCtrlsInfo
+    TypeCtrlsInfo,
+    TypeTutorialOrders
   } Type;
 
   typedef enum BackgroundPattern {
@@ -149,8 +150,13 @@ class PopupBox : public GuiObject {
   Type box;
 
   bool special_click;  // The current click is a special click
+  /* The texts have a black shadow, on the green backgrounds as in the
+     advanced box. */
+  bool text_shadow;
 
   int current_sett_5_item;
+  /* Game end: 0 result picture, 1 result text, 2 mission picture. */
+  int game_end_stage;
   int current_sett_6_item;
 
  public:
@@ -170,7 +176,16 @@ class PopupBox : public GuiObject {
   void draw_box_background(BackgroundPattern sprite);
   void draw_box_row(int sprite, int y);
   void draw_green_string(int x, int y, const std::string &str);
+  /* The lines of a text (split at '\n'), line_height pixels apart: from
+     the column sx, or each centred in the box, or centred at the pixel cx
+     of the box. */
+  void draw_green_lines(int sx, int sy, const std::string &text,
+                        int line_height = 10);
+  void draw_green_centered(int sy, const std::string &text,
+                           int line_height = 10);
+  void draw_green_centered_at(int cx, int sy, const std::string &str);
   void draw_green_number(int x, int y, int n);
+  static std::string format_count(int n);
   void draw_green_large_number(int x, int y, int n);
   void draw_additional_number(int x, int y, int n);
   unsigned int get_player_face_sprite(size_t face);
@@ -233,6 +248,9 @@ class PopupBox : public GuiObject {
   void draw_building_stock_box();
   void draw_player_faces_box();
   void draw_demolish_box();
+  int get_game_end_picture() const;
+  void draw_game_end_box();
+  void draw_tutorial_orders_box();
   void draw_save_box();
   void activate_sett_5_6_item(int index);
   void move_sett_5_6_item(int up, int to_end);
@@ -274,6 +292,8 @@ class PopupBox : public GuiObject {
   void handle_message_clk(int x, int y);
   void handle_player_faces_click(int x, int y);
   void handle_box_demolish_clk(int x, int y);
+  void handle_game_end_click(int x, int y);
+  void handle_tutorial_orders_click(int x, int y);
   void handle_minimap_clk(int x, int y);
   void handle_box_bld_1(int x, int y);
   void handle_box_bld_2(int x, int y);

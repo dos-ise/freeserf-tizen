@@ -28,3 +28,8 @@ bool
 SpriteFile::load(const std::string &path) {
   return false;
 }
+
+bool
+SpriteFile::load_resource(const std::string &name) {
+  return false;
+}

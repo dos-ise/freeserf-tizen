@@ -21,8 +21,12 @@
 
 #include "src/interface.h"
 
+#include <algorithm>
+#include <vector>
 #include <iostream>
 #include <fstream>
+#include <memory>
+#include <string>
 #include <utility>
 
 #include "src/misc.h"
@@ -33,19 +37,19 @@
 #include "src/freeserf.h"
 #include "src/popup.h"
 #include "src/game-init.h"
+#include "src/advanced-box.h"
+#include "src/settings.h"
+#include "src/data-source-mixed.h"
 #include "src/viewport.h"
 #include "src/notification.h"
 #include "src/panel.h"
 #include "src/savegame.h"
+#include "src/translation.h"
 
 // Interval between automatic save games
-#define AUTOSAVE_INTERVAL  (10*60*TICKS_PER_SEC)
 
 Interface::Interface()
   : building_road_valid_dir(0)
-  , sfx_queue{0}
-  , water_in_view(false)
-  , trees_in_view(false)
   , return_pos(0) {
   displayed = true;
 
@@ -58,8 +62,16 @@ Interface::Interface()
   player = nullptr;
 
   /* Settings */
-  config = 0x39;
-  msg_flags = 0;
+  message_level = 3;
+  message_waiting = false;
+  message_opened = false;
+  return_arrow = false;
+  invert_scrolling = false;
+  large_numbers = false;
+  stock_box_occupied = false;
+  autosave_minutes = 0;
+  autosave_last_ticks = 0;
+  autosave_last_game_tick = 0;
   return_timeout = 0;
 
   selected_stat_scale = StatScale30Min;
@@ -76,10 +88,16 @@ Interface::Interface()
 
   last_const_tick = 0;
 
+  show_fps = false;
+  fps = 0;
+  fps_frames = 0;
+  fps_start = 0;
+
   viewport = nullptr;
   panel = nullptr;
   popup = nullptr;
   init_box = nullptr;
+  advanced_box = nullptr;
   notification_box = nullptr;
 
   GameManager::get_instance().add_handler(this);
@@ -94,6 +112,7 @@ Interface::~Interface() {
   delete panel;
   delete popup;
   delete init_box;
+  delete advanced_box;
   delete notification_box;
 }
 
@@ -159,6 +178,116 @@ Interface::open_game_init() {
 }
 
 void
+Interface::apply_settings() {
+  Settings &settings = Settings::get_instance();
+
+  Audio &audio = Audio::get_instance();
+  Audio::PPlayer music = audio.get_music_player();
+  /* Without a setting the current state stays. */
+  if (music) {
+    music->enable(settings.get("options", "music", music->is_enabled()));
+  }
+  Audio::PPlayer sound = audio.get_sound_player();
+  if (sound) {
+    sound->enable(settings.get("options", "sound", sound->is_enabled()));
+  }
+  Audio::VolumeController *volume = audio.get_volume_controller();
+  if (volume != nullptr) {
+    int current = static_cast<int>(volume->get_volume() * 100.f + 0.5f);
+    volume->set_volume(settings.get("options", "volume", current) / 100.f);
+  }
+
+  /* Messages: 3 all, 2 most, 1 few, 0 none. */
+  message_level = std::max(0, std::min(3, settings.get("options", "messages",
+                                                       message_level)));
+
+  invert_scrolling = settings.get("advanced", "invert_scrolling", false);
+  large_numbers = settings.get("advanced", "large_numbers", false);
+  stock_box_occupied = settings.get("advanced", "stock_box_occupied", false);
+  autosave_minutes = settings.get("advanced", "autosave", 0u);
+  Translation::get_instance().set_language(
+    settings.get("advanced", "language", std::string()));
+
+  /* Data source of each category, by name (DOS, Amiga, Custom). */
+  static const char *data_keys[] = { "graphics", "sound", "music" };
+  for (int cat = 0; cat < DataSourceMixed::CategoryCount; cat++) {
+    std::string name = settings.get("data", data_keys[cat], std::string());
+    for (int kind = 0; kind < DataSourceMixed::KindCount; kind++) {
+      if (name == DataSourceMixed::get_kind_name(
+                                   static_cast<DataSourceMixed::Kind>(kind))) {
+        select_data_source(cat, kind);
+      }
+    }
+  }
+}
+
+void
+Interface::store_settings() {
+  Settings &settings = Settings::get_instance();
+
+  Audio &audio = Audio::get_instance();
+  Audio::PPlayer music = audio.get_music_player();
+  if (music) settings.set("options", "music", music->is_enabled());
+  Audio::PPlayer sound = audio.get_sound_player();
+  if (sound) settings.set("options", "sound", sound->is_enabled());
+  Audio::VolumeController *volume = audio.get_volume_controller();
+  if (volume != nullptr) {
+    settings.set("options", "volume",
+                 static_cast<int>(volume->get_volume() * 100.f + 0.5f));
+  }
+  settings.set("options", "fullscreen",
+               Graphics::get_instance().is_fullscreen());
+
+  settings.set("options", "messages", message_level);
+
+  settings.set("advanced", "invert_scrolling", invert_scrolling);
+  settings.set("advanced", "large_numbers", large_numbers);
+  settings.set("advanced", "stock_box_occupied", stock_box_occupied);
+  settings.set("advanced", "autosave", autosave_minutes);
+  settings.set("advanced", "language",
+               Translation::get_instance().get_language());
+  if (Data::get_instance().get_mixed_source()) {
+    settings.set("data", "graphics", get_data_source_name(0));
+    settings.set("data", "sound", get_data_source_name(1));
+    settings.set("data", "music", get_data_source_name(2));
+  }
+
+  settings.save();
+}
+
+void
+Interface::open_advanced() {
+  if (advanced_box == nullptr) {
+    advanced_box = new AdvancedBox(this);
+    add_float(advanced_box, 0, 0);
+  }
+  advanced_box->set_displayed(true);
+  advanced_box->set_enabled(true);
+  if (panel != nullptr) {
+    panel->set_enabled(false);
+  }
+  viewport->set_enabled(false);
+  layout();
+}
+
+void
+Interface::close_advanced() {
+  if (advanced_box != nullptr) {
+    advanced_box->set_displayed(false);
+    del_float(advanced_box);
+    delete advanced_box;
+    advanced_box = nullptr;
+  }
+  if (panel != nullptr) {
+    panel->set_enabled(true);
+  }
+  viewport->set_enabled(true);
+  close_popup();
+  layout();
+  store_settings();
+}
+
+void
 Interface::close_game_init() {
   if (init_box != nullptr) {
     init_box->set_displayed(false);
@@ -182,9 +311,8 @@ Interface::open_message() {
   if (!player->has_notification()) {
     play_sound(Audio::TypeSfxClick);
     return;
-  } else if (!BIT_TEST(msg_flags, 3)) {
-    msg_flags |= BIT(4);
-    msg_flags |= BIT(3);
+  } else if (!return_arrow) {
+    return_arrow = true;
     MapPos pos = viewport->get_current_map_pos();
     return_pos = pos;
   }
@@ -208,16 +336,28 @@ Interface::open_message() {
     update_map_cursor_pos(message.pos);
   }
 
-  msg_flags |= BIT(1);
+  message_opened = true;
   return_timeout = 60*TICKS_PER_SEC;
   play_sound(Audio::TypeSfxClick);
 }
 
+/* Whether a message of the type is shown at the message level: some
+   always, the others from all (3), most (2) or few (1) messages. */
+bool
+Interface::shows_message(Message::Type type) const {
+  /* The least level that shows the type, 0 always (the config bits of the
+     original, 3 to 5, for the levels 3 to 1). */
+  const int least_level[] = {
+    4, 1, 1, 1, 2, 0, 2, 3, 2, 1,
+    1, 1, 2, 2, 2, 2, 0, 0, 0, 0
+  };
+  return message_level >= least_level[type];
+}
+
 void
 Interface::return_from_message() {
-  if (BIT_TEST(msg_flags, 3)) { /* Return arrow present */
-    msg_flags |= BIT(4);
-    msg_flags &= ~BIT(3);
+  if (return_arrow) {
+    return_arrow = false;
 
     return_timeout = 0;
     viewport->move_to_map_pos(return_pos);
@@ -458,6 +598,8 @@ Interface::set_game(PGame new_game) {
   }
 
   game = std::move(new_game);
+  autosave_last_ticks = EventLoop::get_instance().get_ticks();
+  autosave_last_game_tick = 0;
 
   if (game) {
     viewport = new Viewport(this, game->get_map());
@@ -814,6 +956,11 @@ Interface::layout() {
     init_box->set_size(init_box_width, init_box_height);
   }
 
+  if (advanced_box != nullptr) {
+    advanced_box->move_to((width - AdvancedBox::kWidth) / 2,
+                          (height - AdvancedBox::kHeight) / 2);
+  }
+
   if (notification_box != nullptr) {
     int notification_box_width = 200;
     int notification_box_height = 88;
@@ -824,62 +971,258 @@ Interface::layout() {
   }
 
   if (viewport != nullptr) {
-    viewport->set_size(width, height);
+    /* The map view is magnified further than the panel and the boxes. */
+    float map_zoom = Graphics::get_instance().get_map_zoom();
+    viewport->set_zoom(map_zoom);
+    viewport->set_size(
+      static_cast<int>(static_cast<float>(width) / map_zoom + 0.5f),
+      static_cast<int>(static_cast<float>(height) / map_zoom + 0.5f));
   }
 
   set_redraw();
 }
 
+/* Random ambient sounds: birds by the trees in view, waves louder with
+   more water in view and a faint wind (Amiga play_ambient_sounds
+   @0xa494). */
+void
+Interface::play_ambient_sounds() {
+  if (viewport == nullptr) {
+    return;
+  }
+
+  Audio &audio = Audio::get_instance();
+  int r = random.random();
+
+  int trees = viewport->get_trees_in_view();
+  if (trees != 0 && (r & 0x3ff) <= trees) {
+    audio.enqueue_sfx(Audio::TypeSfxBirdChirp0 + (r & 0xc));
+  }
+
+  int water = viewport->get_water_in_view();
+  if (water != 0 && (r & 0xf00) == 0) {
+    audio.set_sfx_volume(Audio::TypeSfxWaves, std::min(water >> 2, 30) + 2);
+    audio.enqueue_sfx(Audio::TypeSfxWaves);
+  }
+
+  if ((r & 0x3000) == 0) {
+    audio.set_sfx_volume(Audio::TypeSfxWind, (r & 1) + 1);
+    audio.enqueue_sfx(Audio::TypeSfxWind);
+  }
+}
+
+/* Whether a source has data of the category: custom data often has no
+   sounds and no music. */
+static bool
+source_has(const DataSourceMixed &mixed, DataSourceMixed::Category category,
+           DataSourceMixed::Kind kind) {
+  Data::PSource source = mixed.get_source(kind);
+  if (!source) return false;
+  switch (category) {
+    case DataSourceMixed::CategorySound:
+      return source->get_sound(Audio::TypeSfxClick) != nullptr;
+    case DataSourceMixed::CategoryMusic:
+      return source->get_music_format() != Data::MusicFormatNone;
+    default:
+      return true;
+  }
+}
+
+std::string
+Interface::get_data_source_name(int category) const {
+  std::shared_ptr<DataSourceMixed> mixed =
+                                     Data::get_instance().get_mixed_source();
+  if (!mixed) return std::string();
+  return DataSourceMixed::get_kind_name(
+    mixed->get_selected(static_cast<DataSourceMixed::Category>(category)));
+}
+
+/* Use another source for a category at once: the images and sounds of the
+   old one are forgotten and everything is drawn again. */
+void
+Interface::select_data_source(int category, int kind) {
+  std::shared_ptr<DataSourceMixed> mixed =
+                                     Data::get_instance().get_mixed_source();
+  DataSourceMixed::Category cat = static_cast<DataSourceMixed::Category>(
+                                                                    category);
+  DataSourceMixed::Kind k = static_cast<DataSourceMixed::Kind>(kind);
+  if (!mixed || mixed->get_selected(cat) == k || !source_has(*mixed, cat, k) ||
+      !mixed->select(cat, k)) {
+    return;
+  }
+  Log::Info["interface"] << "Using the " << DataSourceMixed::get_kind_name(k)
+                         << " data for category " << category;
+  switch (cat) {
+    case DataSourceMixed::CategoryGraphics:
+      Graphics::get_instance().data_changed();
+      invalidate();
+      break;
+    case DataSourceMixed::CategorySound:
+      Audio::get_instance().data_changed(true, false);
+      break;
+    case DataSourceMixed::CategoryMusic:
+      Audio::get_instance().data_changed(false, true);
+      break;
+    default:
+      break;
+  }
+}
+
+/* The next source that has data of the category. */
+void
+Interface::next_data_source(int category) {
+  std::shared_ptr<DataSourceMixed> mixed =
+                                     Data::get_instance().get_mixed_source();
+  if (!mixed) return;
+  DataSourceMixed::Category cat = static_cast<DataSourceMixed::Category>(
+                                                                    category);
+  int current = mixed->get_selected(cat);
+  for (int i = 1; i < DataSourceMixed::KindCount; i++) {
+    int kind = (current + i) % DataSourceMixed::KindCount;
+    if (source_has(*mixed, cat, static_cast<DataSourceMixed::Kind>(kind))) {
+      select_data_source(category, kind);
+      return;
+    }
+  }
+}
+
+/* Advanced option: off, then every 10, 20, 30 or 60 minutes. */
+void
+Interface::next_language() {
+  Translation &translation = Translation::get_instance();
+  std::vector<std::string> languages = translation.get_languages();
+  std::sort(languages.begin(), languages.end());
+  languages.insert(languages.begin(), std::string());
+  auto it = std::find(languages.begin(), languages.end(),
+                      translation.get_language());
+  size_t next = (it == languages.end()) ? 0 :
+                (static_cast<size_t>(it - languages.begin()) + 1) %
+                languages.size();
+  translation.set_language(languages[next]);
+  /* All the texts again. */
+  invalidate();
+}
+
+void
+Interface::next_autosave_interval() {
+  static const unsigned int intervals[] = { 0, 10, 20, 30, 60 };
+  const size_t count = sizeof(intervals) / sizeof(intervals[0]);
+  size_t i = 0;
+  while (i < count && intervals[i] != autosave_minutes) i++;
+  autosave_minutes = intervals[(i + 1) % count];
+  autosave_last_ticks = EventLoop::get_instance().get_ticks();
+}
+
+/* Save the game into autosave.save of the save folder when the interval
+   has passed (in real time), unless nothing happened since the last
+   save: the game was paused or the game init box is open. */
+void
+Interface::autosave() {
+  if (autosave_minutes == 0) return;
+  unsigned int now = EventLoop::get_instance().get_ticks();
+  if (now - autosave_last_ticks < autosave_minutes * 60 * 1000) return;
+  autosave_last_ticks = now;
+
+  if (init_box != nullptr || game->get_tick() == autosave_last_game_tick) {
+    return;
+  }
+  autosave_last_game_tick = game->get_tick();
+
+  GameStore &store = GameStore::get_instance();
+  std::string path = store.get_folder_path() + "/autosave.save";
+  if (store.save(path, game.get())) {
+    Log::Info["interface"] << "Game saved to " << path;
+  }
+}
+
+/* Count the drawn frames and show the rate of the last second in the top
+   left corner of the screen. */
+void
+Interface::draw_fps(Frame *frame) {
+  if (!show_fps) {
+    return;
+  }
+
+  fps_frames++;
+  unsigned int now = EventLoop::get_instance().get_ticks();
+  unsigned int elapsed = now - fps_start;
+  if (elapsed >= 1000) {
+    fps = static_cast<unsigned int>(fps_frames * 1000 / elapsed);
+    fps_frames = 0;
+    fps_start = now;
+  }
+
+  frame->draw_string(4, 4, "FPS " + std::to_string(fps), Color::black);
+}
+
 /* Called periodically when the game progresses. */
 void
 Interface::update() {
+  Audio::get_instance().update_sfx();
+
   if (!game) {
     return;
   }
 
   game->update();
+  play_ambient_sounds();
+  autosave();
+
+  /* Show the end of the game, unless a file, quit or options box is open
+     (Amiga clear_serf_request_failure @0xa3aa). */
+  if (game->is_game_end_pending()) {
+    int box = 0;
+    if ((popup != nullptr) && popup->is_displayed()) {
+      box = popup->get_box();
+    }
+    if (!((box >= PopupBox::TypeLoadArchive &&
+           box <= PopupBox::TypeDiskMsg) ||
+          box == PopupBox::TypeQuitConfirm ||
+          box == PopupBox::TypeNoSaveQuitConfirm ||
+          box == PopupBox::TypeOptions)) {
+      game->clear_game_end_pending();
+      if (!game->is_paused()) {
+        game->pause();
+      }
+      open_popup(PopupBox::TypeGameEnd);
+    }
+  }
 
   int tick_diff = game->get_const_tick() - last_const_tick;
   last_const_tick = game->get_const_tick();
 
   /* Clear return arrow after a timeout */
   if (return_timeout < tick_diff) {
-    msg_flags |= BIT(4);
-    msg_flags &= ~BIT(3);
+    return_arrow = false;
     return_timeout = 0;
   } else {
     return_timeout -= tick_diff;
   }
-
-  const int msg_category[] = {
-    -1, 5, 5, 5, 4, 0, 4, 3, 4, 5,
-    5, 5, 4, 4, 4, 4, 0, 0, 0, 0
-  };
 
   /* Handle newly enqueued messages */
   if ((player != nullptr) && player->has_message()) {
     player->drop_message();
     while (player->has_notification()) {
       Message message = player->peek_notification();
-      if (BIT_TEST(config, msg_category[message.type])) {
+      if (shows_message(message.type)) {
         play_sound(Audio::TypeSfxMessage);
-        msg_flags |= BIT(0);
+        message_waiting = true;
         break;
       }
       player->pop_notification();
     }
   }
 
-  if ((player != nullptr) && BIT_TEST(msg_flags, 1)) {
-    msg_flags &= ~BIT(1);
+  if ((player != nullptr) && message_opened) {
+    message_opened = false;
     while (1) {
       if (!player->has_notification()) {
-        msg_flags &= ~BIT(0);
+        message_waiting = false;
         break;
       }
 
       Message message = player->peek_notification();
-      if (BIT_TEST(config, msg_category[message.type])) break;
+      if (shows_message(message.type)) break;
       player->pop_notification();
     }
   }
@@ -907,6 +1250,15 @@ Interface::handle_key_pressed(char key, int modifier) {
         close_popup();
       } else if (building_road.is_valid()) {
         build_road_end();
+      }
+      break;
+    }
+
+    case 'f': {
+      if ((modifier & 3) == 3) {  /* Ctrl+Shift+F */
+        show_fps = !show_fps;
+        fps_frames = 0;
+        fps_start = EventLoop::get_instance().get_ticks();
       }
       break;
     }
@@ -998,6 +1350,10 @@ Interface::handle_event(const Event *event) {
       break;
     case Event::TypeDraw:
       draw(reinterpret_cast<Frame*>(event->object));
+      draw_fps(reinterpret_cast<Frame*>(event->object));
+      break;
+    case Event::TypeInvalidate:
+      invalidate();
       break;
 
     default:

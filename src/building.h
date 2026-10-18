@@ -36,6 +36,10 @@ class SaveReaderText;
 class SaveWriterText;
 
 class Building : public GameObject {
+  /* The computer player reads the fields as the original does. */
+  friend class AI;
+  /* The consistency check after loading reads them too. */
+  friend class IntegrityCheck;
  public:
   // Max number of different types of resources accepted by buildings.
   static const unsigned int kMaxStock = 3;
@@ -100,7 +104,11 @@ class Building : public GameObject {
   Stock stock[kMaxStock];
   unsigned int first_knight;
   int burning_counter;
+  /* The construction, or the history of the mining of a mine. */
   int progress;
+  /* A military building under attack (bit 0 of progress in the original
+     and in the saves). */
+  bool under_attack;
   /* Type to build on the site once this burning building is gone
      (replace building by a special click). */
   Type queued_type;
@@ -123,6 +131,11 @@ class Building : public GameObject {
   bool has_knight() const { return (first_knight != 0); }
   unsigned int get_first_knight() const { return first_knight; }
   void set_first_knight(unsigned int serf);
+  /* Set up as occupied, then put knights in without the first knight's
+     arrival (tutorial 6's enemy). */
+  void set_occupied() { active = true; }
+  void place_knight(unsigned int serf) {
+    first_knight = serf; stock[0].available += 1; }
 
   Type get_queued_type() const { return queued_type; }
   void set_queued_type(Type _type) { queued_type = _type; }
@@ -148,8 +161,9 @@ class Building : public GameObject {
   int get_progress() const { return progress; }
   bool build_progress();
   void increase_mining(int res);
-  void set_under_attack() { progress |= BIT(0); }
-  bool is_under_attack() const { return BIT_TEST(progress, 0); }
+  void set_under_attack() { under_attack = true; }
+  bool is_under_attack() const { return under_attack; }
+  void split_attack_bit();
 
   /* The threat level of the building. Higher values mean that
    the building is closer to the enemy. */
@@ -245,6 +259,7 @@ class Building : public GameObject {
   void knight_occupy();
 
   void update_military_flag_state();
+  void set_threat_level(int level) { threat_level = level; }
 
   void update(unsigned int tick);
 

@@ -22,6 +22,8 @@
 #ifndef SRC_INTERFACE_H_
 #define SRC_INTERFACE_H_
 
+#include <string>
+
 #include "src/misc.h"
 #include "src/random.h"
 #include "src/map.h"
@@ -41,6 +43,7 @@ class Viewport;
 class PanelBar;
 class PopupBox;
 class GameInitBox;
+class AdvancedBox;
 class NotificationBox;
 
 class Interface : public GuiObject, public GameManager::Handler {
@@ -94,6 +97,7 @@ class Interface : public GuiObject, public GameManager::Handler {
   PanelBar *panel;
   PopupBox *popup;
   GameInitBox *init_box;
+  AdvancedBox *advanced_box;
   NotificationBox *notification_box;
 
   MapPos map_cursor_pos;
@@ -105,11 +109,20 @@ class Interface : public GuiObject, public GameManager::Handler {
   Road building_road;
   int building_road_valid_dir;
 
-  int sfx_queue[4];
-
   Player *player;
-  int config;
-  int msg_flags;
+  /* The messages shown: 3 all, 2 most, 1 few, 0 none (config bits 3, 4
+     and 5 of the original). */
+  int message_level;
+  bool message_waiting;   /* A message to show in the queue. */
+  bool message_opened;    /* A message was opened: skip the hidden ones. */
+  bool return_arrow;      /* The arrow back from the message is shown. */
+  /* Advanced options (not in the original game). */
+  bool invert_scrolling;
+  bool large_numbers;
+  bool stock_box_occupied;
+  unsigned int autosave_minutes;  // 0: off
+  unsigned int autosave_last_ticks;
+  unsigned int autosave_last_game_tick;
 
   SpriteLoc map_cursor_sprites[7];
 
@@ -117,15 +130,21 @@ class Interface : public GuiObject, public GameManager::Handler {
   StatAspect selected_stat_aspect;
   Resource::Type selected_stat_resource;
 
-  int water_in_view;
-  int trees_in_view;
-
   int return_timeout;
   int return_pos;
+
+  /* Frames per second display (Ctrl+Shift+F). */
+  bool show_fps;
+  unsigned int fps;
+  unsigned int fps_frames;
+  unsigned int fps_start;
 
  public:
   Interface();
   virtual ~Interface();
+
+  void draw_fps(Frame *frame);
+  void autosave();
 
   PGame get_game() { return game; }
   void set_game(PGame game);
@@ -137,9 +156,40 @@ class Interface : public GuiObject, public GameManager::Handler {
   PopupBox *get_popup_box();
   NotificationBox *get_notification_box() { return notification_box; }
 
-  bool get_config(int i) const { return (BIT_TEST(config, i) != 0); }
-  void set_config(int i) { config |= BIT(i); }
-  void switch_config(int i) { BIT_INVERT(config, i); }
+  int get_message_level() const { return message_level; }
+  /* All, most, few, none, all again. */
+  void next_message_level() {
+    message_level = (message_level == 0) ? 3 : message_level - 1; }
+  /* Mouse dragging moves the map vertically the other way. */
+  bool get_invert_scrolling() const { return invert_scrolling; }
+  void switch_invert_scrolling() { invert_scrolling = !invert_scrolling; }
+  /* Counts over 999 in the boxes shortened (15K, .2M) instead of >999. */
+  bool get_large_numbers() const { return large_numbers; }
+  void switch_large_numbers() { large_numbers = !large_numbers; }
+  /* A new stock opens its building box until its serf has arrived, not
+     the inventory box. */
+  bool get_stock_box_occupied() const { return stock_box_occupied; }
+  void switch_stock_box_occupied() {
+    stock_box_occupied = !stock_box_occupied; }
+  /* Data source of the graphics, the sounds and the music (when the data
+     of several versions is installed, see DataSourceMixed). */
+  std::string get_data_source_name(int category) const;
+  void next_graphics_source() { next_data_source(0); }
+  void next_sound_source() { next_data_source(1); }
+  void next_music_source() { next_data_source(2); }
+  void select_data_source(int category, int kind);
+  void next_data_source(int category);
+
+  /* Save the game every few minutes into one file (0: off). */
+  unsigned int get_autosave_minutes() const { return autosave_minutes; }
+  void next_autosave_interval();
+  /* The next language with a translation, then the original English. */
+  void next_language();
+
+  /* Settings kept between the runs (Settings): the options of the options
+     and advanced boxes. */
+  void apply_settings();
+  void store_settings();
 
   MapPos get_map_cursor_pos() const { return map_cursor_pos; }
   CursorType get_map_cursor_type() const { return map_cursor_type; }
@@ -148,8 +198,8 @@ class Interface : public GuiObject, public GameManager::Handler {
 
   Random *get_random() { return &random; }
 
-  bool get_msg_flag(int i) const { return (BIT_TEST(msg_flags, i) != 0); }
-  void set_msg_flag(int i) { msg_flags |= BIT(i); }
+  bool has_return_arrow() const { return return_arrow; }
+  bool shows_message(Message::Type type) const;
 
   StatScale get_selected_stat_scale() const { return selected_stat_scale; }
   void set_selected_stat_scale(StatScale scale) { selected_stat_scale = scale; }
@@ -173,6 +223,9 @@ class Interface : public GuiObject, public GameManager::Handler {
 
   void open_game_init();
   void close_game_init();
+  /* Box of the advanced options; closing it closes the options too. */
+  void open_advanced();
+  void close_advanced();
 
   void open_message();
   void return_from_message();
@@ -202,6 +255,7 @@ class Interface : public GuiObject, public GameManager::Handler {
   void build_road();
 
   void update();
+  void play_ambient_sounds();
 
   virtual bool handle_event(const Event *event);
 

@@ -21,6 +21,7 @@
 
 #include "src/mission.h"
 #include "src/game.h"
+#include "src/ai.h"
 
 Character characters[] = {
   { 0, "ERROR", "ERROR"},
@@ -379,11 +380,15 @@ GameInfo::Mission missions[] = {
 
 GameInfo::GameInfo(const Random &_random_base)
   : map_size(3)
-  , name(_random_base) {
+  , name(_random_base)
+  , game_type(Game::GameTypeOnePlayer)
+  , level(0) {
   set_random_base(_random_base);
 }
 
-GameInfo::GameInfo(const GameInfo::Mission *mission_preset) {
+GameInfo::GameInfo(const GameInfo::Mission *mission_preset)
+  : game_type(Game::GameTypeMission)
+  , level(0) {
   map_size = 3;
   name = mission_preset->name;
   random_base = mission_preset->rnd;
@@ -471,12 +476,33 @@ GameInfo::get_mission(size_t m) {
     return nullptr;
   }
 
-  return PGameInfo(new GameInfo(missions + m));
+  PGameInfo mission(new GameInfo(missions + m));
+  mission->level = static_cast<unsigned int>(m);
+  return mission;
 }
 
 size_t
 GameInfo::get_mission_count() {
   return sizeof(missions) / sizeof(missions[0]);
+}
+
+/* Tutorials 1-6 (Amiga mission_table entries 0..5): one human player,
+   castle placed by the player. */
+PGameInfo
+GameInfo::get_tutorial(size_t t) {
+  if (t >= get_tutorial_count()) {
+    return nullptr;
+  }
+
+  PGameInfo tutorial(new GameInfo(tutorials + t));
+  tutorial->game_type = Game::GameTypeTutorial;
+  tutorial->level = static_cast<unsigned int>(t + 1);
+  return tutorial;
+}
+
+size_t
+GameInfo::get_tutorial_count() {
+  return sizeof(tutorials) / sizeof(tutorials[0]);
 }
 
 const Character *
@@ -500,6 +526,7 @@ GameInfo::instantiate() {
   if (!game->init(map_size, random_base)) {
     return nullptr;
   }
+  game->set_game_type(game_type, level);
 
   /* Initialize player and build initial castle */
   for (PPlayerInfo player_info : players) {
@@ -512,8 +539,13 @@ GameInfo::instantiate() {
     PlayerInfo::Pos castle_pos = player_info->get_castle_pos();
     if (castle_pos.col > -1 && castle_pos.row > -1) {
       MapPos pos = game->get_map()->pos(castle_pos.col, castle_pos.row);
+      AI::castle_given(game.get(), player, pos);
       game->build_castle(pos, player);
     }
+  }
+
+  if (game_type == Game::GameTypeTutorial && level == 6) {
+    game->init_tutorial_enemy(def_color[1]);
   }
 
   return game;

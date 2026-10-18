@@ -8,6 +8,9 @@ on:
 
 jobs:
   build:
+    # Attaches the packages to a published release.
+    permissions:
+      contents: write
     runs-on: macos-latest
 
     strategy:
@@ -19,13 +22,15 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: 'recursive'
+          # The version comes from the latest tag (git describe).
+          fetch-depth: 0
 
       - name: Get macOS version
         id: macos
         run: |
           echo "major=$(sw_vers -productVersion | cut -d. -f1)" >> "$GITHUB_OUTPUT"
 
-      # MacPorts with the SDL2 ports takes about 10 minutes to install, so
+      # MacPorts with the SDL3 ports takes about 10 minutes to install, so
       # /opt/local is cached. The key changes with the macOS version, the
       # runner architecture and this workflow (e.g. the list of ports).
       - name: Cache MacPorts
@@ -47,9 +52,10 @@ jobs:
           sudo installer -pkg ./MacPorts.pkg -target /
           export PATH="/opt/local/bin:/opt/local/sbin:$PATH"
           sudo port selfupdate -N
-          sudo port install libsdl2 +universal -N
-          sudo port install libsdl2_mixer +universal -N
-          sudo port install libsdl2_image +universal -N
+          sudo port install SDL3 +universal -N
+          sudo port install SDL3_mixer +universal -N
+          sudo port install SDL3_image +universal -N
+          sudo port install SDL3_ttf +universal -N
           # Copy for the cache, without the ports tree, downloads and archives.
           mkdir -p ~/macports/local
           sudo rsync -a --exclude var/macports/sources \
@@ -95,3 +101,11 @@ jobs:
         with:
           name: FreeSerf-${{ matrix.buildtype }}
           path: ./build/FreeSerf.dmg
+
+      - name: Attach to release
+        if: github.event_name == 'release' && matrix.buildtype == 'Release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            ./build/FreeSerf.dmg --clobber

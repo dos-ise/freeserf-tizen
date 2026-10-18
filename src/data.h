@@ -30,6 +30,7 @@
 
 class Buffer;
 typedef std::shared_ptr<Buffer> PBuffer;
+class DataSourceMixed;
 
 class Data {
  public:
@@ -133,6 +134,8 @@ class Data {
    public:
     virtual std::string get_name() const = 0;
     virtual std::string get_path() const = 0;
+    /* Folder of the music data (for the SoundFont next to it). */
+    virtual std::string get_music_path() const { return get_path(); }
     virtual bool is_loaded() const = 0;
     virtual unsigned int get_scale() const = 0;
     virtual unsigned int get_bpp() const = 0;
@@ -144,6 +147,10 @@ class Data {
                                const Sprite::Color &color) = 0;
 
     virtual MaskImage get_sprite_parts(Resource res, size_t index) = 0;
+    /* Sprite of resource res cut out by mask mask_index of mask_res. */
+    virtual PSprite apply_mask(Resource res, PSprite sprite,
+                               Resource mask_res, size_t mask_index,
+                               PSprite mask) = 0;
 
     virtual size_t get_animation_phase_count(size_t animation) = 0;
     virtual Animation get_animation(size_t animation, size_t phase) = 0;
@@ -159,6 +166,7 @@ class Data {
 
  protected:
   PSource data_source;
+  std::shared_ptr<DataSourceMixed> mixed;
 
   Data();
 
@@ -170,9 +178,14 @@ class Data {
 
   static Data &get_instance();
 
+  /* Find the game data in the paths, each with its subfolders dos, amiga
+     and custom (the standard paths when the list is empty). Every kind of
+     data found is used, see DataSourceMixed. */
+  bool load(const std::list<std::string> &paths);
   bool load(const std::string &path);
 
   PSource get_data_source() const { return data_source; }
+  std::shared_ptr<DataSourceMixed> get_mixed_source() const { return mixed; }
 
   static Type get_resource_type(Resource resource);
   static unsigned int get_resource_count(Resource resource);

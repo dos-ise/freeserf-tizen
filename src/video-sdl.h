@@ -1,4 +1,4 @@
-/*
+﻿/*
  * video-sdl.h - SDL graphics rendering
  *
  * Copyright (C) 2012-2015  Jon Lund Steffensen <jonlst@gmail.com>
@@ -22,10 +22,10 @@
 #ifndef SRC_VIDEO_SDL_H_
 #define SRC_VIDEO_SDL_H_
 
+#include <SDL.h>
+
 #include <exception>
 #include <string>
-
-#include <SDL.h>
 
 #include "src/video.h"
 
@@ -68,7 +68,6 @@ class VideoSDL : public Video {
   SDL_Window *window;
   SDL_Renderer *renderer;
   Video::Frame *screen;
-  bool fullscreen;
   SDL_Cursor *cursor;
   float zoom_factor;
 
@@ -93,9 +92,12 @@ class VideoSDL : public Video {
   virtual void warp_mouse(int x, int y);
 
   virtual void draw_image(const Video::Image *image, int x, int y,
-                           int y_offset, Video::Frame *dest);
+                          int y_offset, Video::Frame *dest);
   virtual void draw_frame(int dx, int dy, Video::Frame *dest, int sx, int sy,
                           Video::Frame *src, int w, int h);
+  virtual void draw_frame_scaled(int dx, int dy, int dw, int dh,
+                                 Video::Frame *dest, Video::Frame *src,
+                                 int w, int h);
   virtual void draw_rect(int x, int y, unsigned int width, unsigned int height,
                          const Video::Color color, Video::Frame *dest);
   virtual void fill_rect(int x, int y, unsigned int width, unsigned int height,
@@ -104,11 +106,10 @@ class VideoSDL : public Video {
                          const Video::Color color, Video::Frame *dest);
 
   virtual void swap_buffers();
-
   virtual void set_cursor(void *data, unsigned int width, unsigned int height);
 
-  virtual float get_zoom_factor() { return zoom_factor; }
   virtual bool set_zoom_factor(float factor);
+  virtual float get_zoom_factor() { return zoom_factor; }
   virtual void get_screen_factor(float *fx, float *fy);
 
  protected:

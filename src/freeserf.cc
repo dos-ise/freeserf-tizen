@@ -1,4 +1,4 @@
-/*
+﻿/*
  * freeserf.cc - Main program source.
  *
  * Copyright (C) 2013-2018  Jon Lund Steffensen <jonlst@gmail.com>
@@ -21,6 +21,9 @@
 
 #include "src/freeserf.h"
 
+#include <SDL.h>
+
+#include <list>
 #include <string>
 #include <iostream>
 
@@ -30,10 +33,10 @@
 #include "src/audio.h"
 #include "src/gfx.h"
 #include "src/interface.h"
+#include "src/settings.h"
 #include "src/game-manager.h"
 #include "src/command_line.h"
-
-#include <SDL.h>
+#include "src/translation.h"
 
 // ============================================================================
 // EMSCRIPTEN / WEBASSEMBLY SUPPORT
@@ -56,7 +59,7 @@ void main_loop_iteration() {
     emscripten_cancel_main_loop();
     return;
   }
-  
+
   // Run one iteration of the event loop
   g_event_loop->run_iteration();
 }
@@ -65,7 +68,7 @@ void main_loop_iteration() {
 
 int
 main(int argc, char *argv[]) {
-  std::string data_dir;
+  std::list<std::string> data_dirs;
   std::string save_file;
 
   unsigned int screen_width = 0;
@@ -84,9 +87,12 @@ main(int argc, char *argv[]) {
                 });
   command_line.add_option('f', "Run in Fullscreen mode",
                           [&fullscreen](){ fullscreen = true; });
-  command_line.add_option('g', "Use specified data directory")
-                .add_parameter("DATA-PATH", [&data_dir](std::istream& s) {
-                  s >> data_dir;
+  command_line.add_option('g', "Use specified data directory (may be "
+                               "given more than once)")
+                .add_parameter("DATA-PATH", [&data_dirs](std::istream& s) {
+                  std::string data_dir;
+                  std::getline(s, data_dir);
+                  data_dirs.push_back(data_dir);
                   return true;
                 });
   command_line.add_option('h', "Show this help text", [&command_line](){
@@ -113,17 +119,24 @@ main(int argc, char *argv[]) {
 
   Log::Info["main"] << "freeserf " << FREESERF_VERSION;
 
+  /* Settings of the last run; the language already for the messages. */
+  Settings &settings = Settings::get_instance();
+  settings.load();
+  Translation::get_instance().set_language(
+    settings.get("advanced", "language", std::string()));
+
   Data &data = Data::get_instance();
-  if (!data.load(data_dir)) {
+  if (!data.load(data_dirs)) {
     Log::Error["main"] << "Could not load game data.";
 #ifndef __EMSCRIPTEN__
     /* Without the data there is no font to show it in the game. */
+    std::string message = _("Could not find the game data.\n\n"
+                            "Copy the data file of the original game "
+                            "(SPAE.PA, SPAD.PA, SPAF.PA or SPAU.PA) into "
+                            "the FreeSerf data directory, or give its "
+                            "directory with -g DATA-PATH.");
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "FreeSerf",
-                             "Could not find the game data.\n\n"
-                             "Copy the data file of the original game "
-                             "(SPAE.PA, SPAD.PA, SPAF.PA or SPAU.PA) into "
-                             "the FreeSerf data directory, or give its "
-                             "directory with -g DATA-PATH.", nullptr);
+                             message.c_str(), nullptr);
 #endif
     return EXIT_FAILURE;
   }
@@ -166,6 +179,12 @@ main(int argc, char *argv[]) {
   interface.set_size(screen_width, screen_height);
   interface.set_displayed(true);
 
+  /* Settings of the last run; -f asks for fullscreen in any case. */
+  interface.apply_settings();
+  if (fullscreen || settings.get("options", "fullscreen", false)) {
+    gfx.set_fullscreen(true);
+  }
+
   if (save_file.empty()) {
     interface.open_game_init();
   }
@@ -181,11 +200,11 @@ main(int argc, char *argv[]) {
   g_event_loop = &event_loop;
   g_interface = &interface;
   g_game_running = true;
-  
+
   // Set main loop - browser will call main_loop_iteration repeatedly
   // Parameters: function, fps (0 = browser decides), simulate_infinite_loop
   emscripten_set_main_loop(main_loop_iteration, 0, 1);
-  
+
   // IMPORTANT: Code after emscripten_set_main_loop is never reached!
   // Cleanup happens in main_loop_iteration when cancelled
 #else
@@ -193,6 +212,9 @@ main(int argc, char *argv[]) {
   event_loop.run();
 
   event_loop.del_handler(&interface);
+
+  /* Options changed by keys (music, sound, fullscreen) too. */
+  interface.store_settings();
 
   Log::Info["main"] << "Cleaning up...";
 #endif

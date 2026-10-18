@@ -1,4 +1,4 @@
-/*
+﻿/*
  * sprite-file-sdl.cc - Sprite loaded from file implementation
  *
  * Copyright (C) 2017  Wicked_Digger <wicked_digger@mail.ru>
@@ -24,7 +24,21 @@
 #include <SDL_image.h>
 
 SpriteFile::SpriteFile() {
-  IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG | IMG_INIT_TIF);
+}
+
+bool
+SpriteFile::load_resource(const std::string &name) {
+  const char *base = SDL_GetBasePath();
+  if (base != nullptr && load(std::string(base) + "resources/" + name)) {
+    return true;
+  }
+#ifdef FREESERF_RESOURCES_DIR
+  /* Running from the build tree. */
+  if (load(std::string(FREESERF_RESOURCES_DIR) + "/" + name)) {
+    return true;
+  }
+#endif
+  return false;
 }
 
 bool
@@ -33,10 +47,11 @@ SpriteFile::load(const std::string &path) {
   if (image == nullptr) {
     return false;
   }
-  SDL_Surface *surf = SDL_ConvertSurfaceFormat(image,
-                                               SDL_PIXELFORMAT_ARGB8888,
-                                               0);
+  SDL_Surface *surf = SDL_ConvertSurfaceFormat(image, SDL_PIXELFORMAT_ARGB8888, 0);
   SDL_FreeSurface(image);
+  if (surf == nullptr) {
+    return false;
+  }
   SDL_LockSurface(surf);
   width = surf->w;
   height = surf->h;

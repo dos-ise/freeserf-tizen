@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "src/savegame.h"
+#include "src/ai.h"
 #include "src/debug.h"
 #include "src/log.h"
 #include "src/misc.h"
@@ -53,7 +54,11 @@ Game::Game()
   , tutorial_level(0)
   , mission_level(0)
   , map_preserve_bugs(0)
-  , player_score_leader(0) {
+  , land_leader(-1)
+  , military_leader(-1)
+  , winning_player(-1)
+  , game_end_pending(false)
+  , ai_game() {
   players = Players(this);
   flags = Flags(this);
   inventories = Inventories(this);
@@ -89,7 +94,7 @@ Game::Game()
   tick_diff = 0;
 
   max_next_index = 0;
-  game_type = 0;
+  game_type = GameTypeOnePlayer;
   flag_search_counter = 0;
   game_stats_counter = 0;
   history_counter = 0;
@@ -516,23 +521,148 @@ Game::record_player_history(int max_level, int aspect,
   }
 }
 
+void
+Game::set_game_type(int type, int level) {
+  game_type = type;
+  tutorial_level = (type == GameTypeTutorial) ? level : 0;
+  mission_level = (type == GameTypeMission) ? level : 0;
+}
+
 /* Calculate whether one player has enough advantage to be
-   considered a clear winner regarding one aspect.
+   considered a clear winner regarding one aspect: more than 74 percent,
+   counted as (100 * value - 1) / total with the total scaled down to at
+   most 0xfffe (Amiga record_player_history @0x895e).
    Return -1 if there is no clear winner. */
 int
 Game::calculate_clear_winner(const Values &values) {
-  int total = 0;
-  for (auto value : values) {
+  Values scaled = values;
+  uint64_t total = 0;
+  for (auto value : scaled) {
     total += value.second;
   }
-  total = std::max(1, total);
+  while (total > 0xfffe) {
+    total >>= 1;
+    for (auto &value : scaled) {
+      value.second >>= 1;
+    }
+  }
+  total = std::max<uint64_t>(1, total);
 
-  for (auto value : values) {
-    uint64_t val = value.second;
-    if ((100*val)/total >= 75) return value.first;
+  for (auto value : scaled) {
+    uint64_t val = 100 * static_cast<uint64_t>(value.second);
+    if (val != 0) val -= 1;
+    if (val / total > 74) return value.first;
   }
 
   return -1;
+}
+
+/* Sum of a resource's production history (Amiga history_sum_120). */
+static unsigned int
+history_sum(Player *player, Resource::Type resource) {
+  int *history = player->get_resource_count_history(resource);
+  unsigned int sum = 0;
+  for (int i = 0; i < 120; i++) {
+    sum += history[i];
+  }
+  return sum;
+}
+
+/* The human player completes a tutorial with its goal (Amiga
+   update_game_stats @0x86ac). */
+void
+Game::update_tutorial() {
+  Player *player = get_player(0);
+  if (winning_player >= 0 || player == nullptr) {
+    return;
+  }
+
+  bool completed = false;
+  switch (tutorial_level) {
+    case 1:  // Military buildings
+      completed =
+        player->get_completed_building_count(Building::TypeHut) != 0 &&
+        player->get_completed_building_count(Building::TypeTower) != 0 &&
+        player->get_completed_building_count(Building::TypeFortress) != 0;
+      break;
+    case 2:  // Stone and planks
+      completed = history_sum(player, Resource::TypeStone) >= 5 &&
+                  history_sum(player, Resource::TypePlank) >= 5;
+      break;
+    case 3:  // Food
+      completed = history_sum(player, Resource::TypeFish) >= 5 &&
+                  history_sum(player, Resource::TypeMeat) >= 5 &&
+                  history_sum(player, Resource::TypeBread) >= 5;
+      break;
+    case 4:  // Steel and gold
+      completed = history_sum(player, Resource::TypeSteel) >= 5 &&
+                  history_sum(player, Resource::TypeGoldBar) >= 5;
+      break;
+    case 5: {  // Weapons and tools
+      unsigned int weapons = history_sum(player, Resource::TypeSword) +
+                             history_sum(player, Resource::TypeShield);
+      unsigned int tools = 0;
+      for (int r = Resource::TypeShovel; r <= Resource::TypePincer; r++) {
+        tools += history_sum(player, (Resource::Type)r);
+      }
+      completed = weapons >= 10 && tools >= 10;
+      break;
+    }
+    default: {  // Conquer the enemy's land
+      Player *enemy = get_player(1);
+      completed = (enemy == nullptr) || (enemy->get_land_area() == 0);
+      break;
+    }
+  }
+
+  if (completed) {
+    winning_player = 0;
+    game_end_pending = true;
+  }
+}
+
+/* A player leading both in land and in military wins once the players
+   have 50 building points in total. In a mission, the human player can
+   still win after a computer player has (Amiga update_game_stats
+   @0x87fc). */
+void
+Game::update_winner() {
+  int building_total = 0;
+  for (Player *player : players) {
+    building_total += player->get_building_score();
+  }
+  if (building_total < 50) {
+    return;
+  }
+
+  /* The leader of both the land and the military. */
+  int leader = -1;
+  if (land_leader >= 0 && land_leader == military_leader &&
+      players[land_leader] != nullptr) {
+    leader = land_leader;
+  }
+
+  if (winning_player < 0) {
+    if (leader >= 0) {
+      winning_player = leader;
+      game_end_pending = true;
+    }
+  } else if (winning_player > 0 && game_type == GameTypeMission &&
+             leader == 0) {
+    winning_player = 0;
+    game_end_pending = true;
+  }
+}
+
+/* The leaders of a save, a bit for each player. */
+void
+Game::set_score_leader_bits(int bits) {
+  land_leader = -1;
+  military_leader = -1;
+  for (int i = 0; i < 4; i++) {
+    if (BIT_TEST(bits, i) && land_leader < 0) land_leader = i;
+    if (BIT_TEST(bits, i + 4) && military_leader < 0) military_leader = i;
+  }
 }
 
 /* Update statistics of the game. */
@@ -543,7 +673,8 @@ Game::update_game_stats() {
   } else {
     game_stats_counter += 1500 - tick_diff;
 
-    player_score_leader = 0;
+    land_leader = -1;
+    military_leader = -1;
 
     int update_level = 0;
 
@@ -589,8 +720,7 @@ Game::update_game_stats() {
       values[player->get_index()] = player->get_land_area();
     }
     record_player_history(update_level, 1, player_history_index, values);
-    // ToDo (Digger): What is this? BIT(-1)?
-    player_score_leader |= BIT(calculate_clear_winner(values));
+    land_leader = calculate_clear_winner(values);
 
     /* Store building stats in history. */
     for (Player *player : players) {
@@ -603,7 +733,7 @@ Game::update_game_stats() {
       values[player->get_index()] = player->get_military_score();
     }
     record_player_history(update_level, 3, player_history_index, values);
-    player_score_leader |= BIT(calculate_clear_winner(values)) << 4;
+    military_leader = calculate_clear_winner(values);
 
     /* Store condensed score of all aspects in history. */
     for (Player *player : players) {
@@ -611,7 +741,11 @@ Game::update_game_stats() {
     }
     record_player_history(update_level, 0, player_history_index, values);
 
-    /* TODO Determine winner based on game.player_score_leader */
+    if (game_type == GameTypeTutorial) {
+      update_tutorial();
+    } else {
+      update_winner();
+    }
   }
 
   if (static_cast<int>(history_counter) > tick_diff) {
@@ -641,6 +775,7 @@ Game::update() {
   last_tick = tick;
   tick += game_speed;
   tick_diff = tick - last_tick;
+  ai_game.ticks_288 = (ai_game.ticks_288 + tick_diff) & 0xffff;
 
   clear_serf_request_failure();
   map->update(tick, &init_map_rnd);
@@ -648,6 +783,46 @@ Game::update() {
   /* Update players */
   for (Player *player : players) {
     player->update();
+  }
+
+  /* Scheduler of the original (Amiga update_scheduled @0xa864): next_index
+     cycles through the slots once per update. Slots 0..31 run the AI site
+     scan early in the game, slot 32 the AI build damping and the
+     emergency programs unless the game is paused, slots 33..48 the AI
+     players' updates. */
+  next_index += 1;
+  if (next_index >= max_next_index) next_index = 0;
+  if (next_index < 32) {
+    if (game_speed != 0 && flags.get_max_index() < 50) {
+      Player *player = get_player(next_index & 3);
+      if (player != nullptr && player->is_in_game() && player->is_ai()) {
+        AI::scan_sites(this, player);
+      }
+    }
+  } else if (next_index == 32) {
+    if (game_speed != 0) {
+      AI::update_build_damping_all(this);
+      for (Player *player : players) {
+        player->update_emergency_program();
+      }
+    }
+  } else {
+    /* A slot of a player that is not an AI player, or that loses the
+       intelligence roll, passes on to the next slot. */
+    while (true) {
+      Player *player = get_player((next_index - 33) & 3);
+      if (player != nullptr && player->is_in_game() && player->is_ai() &&
+          random_int() < static_cast<uint16_t>(player->get_ai_intelligence())) {
+        AI::update(this, player);
+        break;
+      }
+
+      next_index += 1;
+      if (next_index >= max_next_index) {
+        next_index = 0;
+        break;
+      }
+    }
   }
 
   /* Update knight morale */
@@ -663,29 +838,6 @@ Game::update() {
     update_inventories();
     inventory_schedule_counter += 64;
   }
-
-#if 0
-  /* AI related updates */
-  game.next_index = (game.next_index + 1) % game.max_next_index;
-  if (game.next_index > 32) {
-    for (int i = 0; i < game.max_next_index) {
-      int i = 33 - game.next_index;
-      player_t *player = game.player[i & 3];
-      if (PLAYER_IS_ACTIVE(player) && PLAYER_IS_AI(player)) {
-        /* AI */
-        /* TODO */
-      }
-      game.next_index += 1;
-    }
-  } else if (game.game_speed > 0 &&
-       game.max_flag_index < 50) {
-    player_t *player = game.player[game.next_index & 3];
-    if (PLAYER_IS_ACTIVE(player) && PLAYER_IS_AI(player)) {
-      /* AI */
-      /* TODO */
-    }
-  }
-#endif
 
   update_flags();
   update_buildings();
@@ -976,8 +1128,8 @@ Game::remove_road_forwards(MapPos pos, Direction dir) {
 bool
 Game::demolish_road_(MapPos pos) {
   /* TODO necessary?
-  game.player[0]->flags |= BIT(4);
-  game.player[1]->flags |= BIT(4);
+  game.player[0]->knight_level_reduced = true;
+  game.player[1]->knight_level_reduced = true;
   */
 
   if (!map->remove_road_backrefs(pos)) {
@@ -1248,6 +1400,12 @@ Game::build_flag(MapPos pos, Player *player) {
     return false;
   }
 
+  return place_flag(pos, player);
+}
+
+/* Build a flag without checking the site. */
+bool
+Game::place_flag(MapPos pos, Player *player) {
   Flag *flag = flags.allocate();
   if (flag == NULL) return false;
 
@@ -1558,16 +1716,23 @@ Game::build_building(MapPos pos, Building::Type type, Player *player) {
     /* TODO Check that more stocks are allowed to be built */
   }
 
+  return place_building(pos, type, player) != nullptr;
+}
+
+/* Build a building and its flag without checking the site, as the
+   original's game_build_building, which relies on the map cursor type. */
+Building *
+Game::place_building(MapPos pos, Building::Type type, Player *player) {
   Building *bld = buildings.allocate();
   if (bld == NULL) {
-    return false;
+    return nullptr;
   }
 
   Flag *flag = get_flag_at_pos(map->move_down_right(pos));
   if (flag == NULL) {
-    if (!build_flag(map->move_down_right(pos), player)) {
+    if (!place_flag(map->move_down_right(pos), player)) {
       buildings.erase(bld->get_index());
-      return false;
+      return nullptr;
     }
     flag = get_flag_at_pos(map->move_down_right(pos));
   }
@@ -1577,6 +1742,7 @@ Game::build_building(MapPos pos, Building::Type type, Player *player) {
   bld->set_position(pos);
   Map::Object map_obj = bld->start_building(type);
   player->building_founded(bld);
+  player->designate_emergency_building(bld);
 
   bool split_path = false;
   if (map->get_obj(map->move_down_right(pos)) != Map::ObjectFlag) {
@@ -1606,7 +1772,7 @@ Game::build_building(MapPos pos, Building::Type type, Player *player) {
 
   if (split_path) build_flag_split_path(map->move_down_right(pos));
 
-  return true;
+  return bld;
 }
 
 /* Build castle at position. */
@@ -1640,6 +1806,48 @@ Game::build_castle(MapPos pos, Player *player) {
   inventory->set_flag_index(flag->get_index());
   inventory->set_owner(player->get_index());
   inventory->apply_supplies_preset(player->get_initial_supplies());
+
+  /* Supplies of the tutorials (Amiga game_build_castle @0x15574). */
+  if (game_type == GameTypeTutorial) {
+    switch (tutorial_level) {
+      case 2:
+        inventory->set_count_of(Resource::TypeLumber, 0);
+        break;
+      case 3:
+        inventory->set_count_of(Resource::TypePig, 0);
+        inventory->set_count_of(Resource::TypeWheat, 0);
+        inventory->set_count_of(Resource::TypeFlour, 0);
+        break;
+      case 4:
+        inventory->set_count_of(Resource::TypeIronOre, 0);
+        inventory->set_count_of(Resource::TypeCoal, 0);
+        inventory->set_count_of(Resource::TypeGoldOre, 0);
+        break;
+      case 5:
+        inventory->set_count_of(Resource::TypeSteel, 200);
+        inventory->set_count_of(Resource::TypeCoal, 200);
+        break;
+      case 6:
+        inventory->set_count_of(Resource::TypeGoldBar, 30);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /* Reserve of the emergency program: 7 planks and 2 stones are kept back
+     from the castle (Amiga game_build_castle @0x155de). */
+  unsigned int planks = std::min(7u,
+                                 inventory->get_count_of(Resource::TypePlank));
+  unsigned int stone = std::min(2u,
+                                inventory->get_count_of(Resource::TypeStone));
+  inventory->set_count_of(Resource::TypePlank,
+                          inventory->get_count_of(Resource::TypePlank) -
+                          planks);
+  inventory->set_count_of(Resource::TypeStone,
+                          inventory->get_count_of(Resource::TypeStone) -
+                          stone);
+  player->start_emergency_program(planks, stone);
 
   add_gold_total(static_cast<int>(
     inventory->get_count_of(Resource::TypeGoldBar)));
@@ -2067,6 +2275,8 @@ Game::occupy_enemy_building(Building *building, int player_num) {
     }
 
     update_land_ownership(building->get_position());
+
+    AI::building_conquered(this, player, flag->get_position());
   }
 }
 
@@ -2141,6 +2351,67 @@ Game::add_player(unsigned int intelligence, unsigned int supplies,
   return player->get_index();
 }
 
+/* Tutorial 6: a passive enemy, player 1, with a finished hut, fortress,
+   tower and hut manned by level 0 knights (Amiga game_init_start_castles
+   @0x49ca). The original's enemy is not an added player, so the gold
+   morale factor stays the one of a single player. */
+void
+Game::init_tutorial_enemy(const Player::Color &color) {
+  Player *human = get_player(0);
+  for (size_t i = 0; i < 4; i++) {
+    human->set_knight_occupation(i, 0x40);
+  }
+
+  int gold_morale_factor = map_gold_morale_factor;
+  Player *enemy = get_player(add_player(0, 0, 0));
+  map_gold_morale_factor = gold_morale_factor;
+  enemy->init_passive(color);
+
+  const struct {
+    unsigned int col, row;
+    Building::Type type;
+  } sites[] = {
+    { 20, 26, Building::TypeHut },
+    { 21, 33, Building::TypeFortress },
+    { 25, 34, Building::TypeTower },
+    { 30, 38, Building::TypeHut }
+  };
+  for (const auto &site : sites) {
+    build_occupied_military(map->pos(site.col, site.row), site.type, enemy);
+  }
+}
+
+/* A finished military building with its knights (Amiga
+   tutorial_build_military_building @0x4b58). */
+void
+Game::build_occupied_military(MapPos pos, Building::Type type,
+                              Player *player) {
+  Building *building = place_building(pos, type, player);
+  if (building == nullptr) {
+    return;
+  }
+
+  while (!building->build_progress()) {}
+  building->set_occupied();
+
+  int knights = 12;
+  if (type == Building::TypeHut) {
+    knights = 3;
+  } else if (type == Building::TypeTower) {
+    knights = 6;
+  }
+  for (int i = 0; i < knights; i++) {
+    Serf *knight = create_serf();
+    if (knight == nullptr) {
+      break;
+    }
+    knight->init_defending_knight(building);
+    building->place_knight(knight->get_index());
+  }
+
+  update_land_ownership(pos);
+}
+
 bool
 Game::init(unsigned int map_size, const Random &random) {
   init_map_rnd = random;
@@ -2151,6 +2422,10 @@ Game::init(unsigned int map_size, const Random &random) {
   generator.generate();
   map->init_tiles(generator);
   gold_total = map->get_gold_deposit();
+
+  /* Slots of the scheduler (Amiga game_init); 49 once an AI player is
+     added. */
+  max_next_index = 33;
 
   return true;
 }
@@ -2249,6 +2524,9 @@ Game::create_building(int index) {
 
 void
 Game::delete_building(Building *building) {
+  for (Player *player : players) {
+    player->building_deleted(building->get_index());
+  }
   map->set_object(building->get_position(), Map::ObjectNone, 0);
   buildings.erase(building->get_index());
 }
@@ -2443,19 +2721,6 @@ Game::get_next_player(const Player *player) {
   return (*p);
 }
 
-unsigned int
-Game::get_enemy_score(const Player *player) const {
-  unsigned int enemy_score = 0;
-
-  for (const Player* p : players) {
-    if (player->get_index() != p->get_index()) {
-      enemy_score += p->get_total_military_score();
-    }
-  }
-
-  return enemy_score;
-}
-
 void
 Game::building_captured(Building *building) {
   /* Save amount of land and buildings for each player */
@@ -2540,13 +2805,16 @@ operator >> (SaveReaderBinary &reader, Game &game) {
   reader >> v16;  // 118
   game.resource_history_index = v16;
 
-//  if (0/*game.Gameype == GameYPE_TUTORIAL*/) {
-//    game.tutorial_level = *reinterpret_cast<uint16_t*>(&data[122]);
-//  } else if (0/*game.Gameype == GameYPE_MISSION*/) {
-//    game.mission_level = *reinterpret_cast<uint16_t*>(&data[124]);
-//  }
+  reader.skip(2);
+  reader >> v16;  // 122
+  int tutorial_level = v16;
+  reader >> v16;  // 124
+  int mission_level = v16;
+  game.set_game_type(game.game_type,
+                     (game.game_type == Game::GameTypeTutorial) ?
+                     tutorial_level : mission_level);
 
-  reader.skip(54);
+  reader.skip(48);
 
   reader >> v16;  // 174
   int max_inventory_index = v16;
@@ -2572,7 +2840,7 @@ operator >> (SaveReaderBinary &reader, Game &game) {
   reader.skip(2);
   uint8_t v8;
   reader >> v8;  // 204
-  game.player_score_leader = v8;
+  game.set_score_leader_bits(v8);
 
   reader.skip(45);
 
@@ -2761,6 +3029,14 @@ operator >> (SaveReaderText &reader, Game &game) {
 //  LOGV("savegame", "Loading save game from version %s.", version.c_str());
 
   game_reader->value("game_type") >> game.game_type;
+  if (game_reader->has_value("mission_level")) {
+    game_reader->value("tutorial_level") >> game.tutorial_level;
+    game_reader->value("mission_level") >> game.mission_level;
+    game_reader->value("winning_player") >> game.winning_player;
+  } else {
+    /* Older saves have no game type of their own. */
+    game.set_game_type(Game::GameTypeOnePlayer, 0);
+  }
   game_reader->value("tick") >> game.tick;
   game_reader->value("game_stats_counter") >> game.game_stats_counter;
   game_reader->value("history_counter") >> game.history_counter;
@@ -2789,10 +3065,38 @@ operator >> (SaveReaderText &reader, Game &game) {
   }
   game_reader->value("resource_history_index") >> game.resource_history_index;
   game_reader->value("max_next_index") >> game.max_next_index;
+  /* Older saves did not use the scheduler slots. */
+  if (game.max_next_index < 33) game.max_next_index = 33;
   game_reader->value("map.gold_morale_factor") >> game.map_gold_morale_factor;
-  game_reader->value("player_score_leader") >> game.player_score_leader;
+  int leader_bits = 0;
+  game_reader->value("player_score_leader") >> leader_bits;
+  game.set_score_leader_bits(leader_bits);
 
   game_reader->value("gold_deposit") >> game.gold_total;
+  if (game_reader->has_value("ai_ticks")) {
+    game_reader->value("ai_ticks") >> game.ai_game.ticks_288;
+  }
+  /* Older saves did not keep these: the generator of the map is the game's,
+     the counters start again. */
+  if (game_reader->has_value("map_random")) {
+    std::string map_rnd_str;
+    game_reader->value("map_random") >> map_rnd_str;
+    game.init_map_rnd = Random(map_rnd_str);
+  } else {
+    game.init_map_rnd = game.rnd;
+  }
+  if (game_reader->has_value("knight_morale_counter")) {
+    game_reader->value("knight_morale_counter") >> game.knight_morale_counter;
+  }
+  if (game_reader->has_value("inventory_schedule_counter")) {
+    game_reader->value("inventory_schedule_counter") >>
+      game.inventory_schedule_counter;
+  }
+  if (game_reader->has_value("game_end_pending")) {
+    int pending = 0;
+    game_reader->value("game_end_pending") >> pending;
+    game.game_end_pending = (pending != 0);
+  }
 
   Map::UpdateState update_state;
   int x, y;
@@ -2808,6 +3112,8 @@ operator >> (SaveReaderText &reader, Game &game) {
   for (SaveReaderText* subreader : reader.get_sections("player")) {
     Player *p = game.players.get_or_insert(subreader->get_number());
     *subreader >> *p;
+    /* Older saves did not use the AI slots. */
+    if (p->is_ai() && game.max_next_index < 49) game.max_next_index = 49;
   }
 
   for (SaveReaderText* subreader : reader.get_sections("flag")) {
@@ -2874,7 +3180,30 @@ operator >> (SaveReaderText &reader, Game &game) {
   game.game_speed = 0;
   game.game_speed_save = DEFAULT_GAME_SPEED;
 
+  /* Older saves did not keep the castle of a player. */
+  for (Building *building : game.buildings) {
+    if (building->get_index() == 0 ||
+        building->get_type() != Building::TypeCastle) {
+      continue;
+    }
+    Player *player = game.players[building->get_owner()];
+    if (player != nullptr) {
+      player->restore_castle(building);
+    }
+  }
+
+  /* The owners of the land are not saved: computed again from the military
+     buildings. That would also update the threat levels of the military
+     buildings, which the game updates only when the land near them
+     changes: they stay as saved. */
+  std::map<unsigned int, int> threat_levels;
+  for (Building *building : game.buildings) {
+    threat_levels[building->get_index()] = building->get_threat_level();
+  }
   game.init_land_ownership();
+  for (Building *building : game.buildings) {
+    building->set_threat_level(threat_levels[building->get_index()]);
+  }
 
   return reader;
 }
@@ -2883,6 +3212,9 @@ SaveWriterText&
 operator << (SaveWriterText &writer, Game &game) {
   writer.value("map.size") << game.map->get_size();
   writer.value("game_type") << game.game_type;
+  writer.value("tutorial_level") << game.tutorial_level;
+  writer.value("mission_level") << game.mission_level;
+  writer.value("winning_player") << game.winning_player;
   writer.value("tick") << game.tick;
   writer.value("game_stats_counter") << game.game_stats_counter;
   writer.value("history_counter") << game.history_counter;
@@ -2900,8 +3232,16 @@ operator << (SaveWriterText &writer, Game &game) {
   writer.value("resource_history_index") << game.resource_history_index;
 
   writer.value("max_next_index") << game.max_next_index;
+  writer.value("ai_ticks") << game.ai_game.ticks_288;
+  writer.value("map_random") << (std::string)game.init_map_rnd;
+  writer.value("knight_morale_counter") << game.knight_morale_counter;
+  writer.value("inventory_schedule_counter") <<
+    game.inventory_schedule_counter;
+  writer.value("game_end_pending") << (game.game_end_pending ? 1 : 0);
   writer.value("map.gold_morale_factor") << game.map_gold_morale_factor;
-  writer.value("player_score_leader") << game.player_score_leader;
+  writer.value("player_score_leader") <<
+    ((game.land_leader >= 0 ? BIT(game.land_leader) : 0) |
+     (game.military_leader >= 0 ? BIT(game.military_leader + 4) : 0));
 
   writer.value("gold_deposit") << game.gold_total;
 
